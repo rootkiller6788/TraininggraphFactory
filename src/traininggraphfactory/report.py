@@ -75,9 +75,12 @@ def _matched(result: Any) -> list[tuple[Any, Any]]:
     return out
 
 
-def _five_answer_hits(result: Any) -> int:
+def _five_answer_hits(result: Any, matched: Sequence[tuple[Any, Any]] | None = None) -> int:
+    """五问全对的配对个数。`matched` 可由调用方传入 —— 一次评估里要问好几遍
+    「配对了多少」，每次重算配对表纯属浪费。"""
+    pairs = _matched(result) if matched is None else matched
     n = 0
-    for a, t in _matched(result):
+    for a, t in pairs:
         if (
             a.what == t.what
             and abs(a.when_step - t.when_step) <= 1
@@ -90,8 +93,9 @@ def _five_answer_hits(result: Any) -> int:
     return n
 
 
-def _chain_hits(result: Any) -> int:
-    return sum(1 for a, t in _matched(result) if a.chain_keys == t.chain_keys)
+def _chain_hits(result: Any, matched: Sequence[tuple[Any, Any]] | None = None) -> int:
+    pairs = _matched(result) if matched is None else matched
+    return sum(1 for a, t in pairs if a.chain_keys == t.chain_keys)
 
 
 def _unstratified_count(result: Any) -> int | None:
@@ -155,9 +159,8 @@ def expectation_rows(result: Any) -> list[dict[str, Any]]:
     n_roots = len(result.run.truths)
     recall = ver.n_roots_recovered / max(1, n_roots)
     fp = len(rec.unattributed)
-    n_matched = max(1, len(_matched(result)))
-    five_rate = _five_answer_hits(result) / n_matched
-    chain_rate = _chain_hits(result) / n_matched
+    # 归因↔真值的配对表只建一次；这张表在下面几条判据里都要用。
+    matched = _matched(result)
 
     lift = ver.alignment_lift()
     const_only = ver.ablation("identity+constant")
@@ -205,8 +208,8 @@ def expectation_rows(result: Any) -> list[dict[str, Any]]:
             f"resource {len(result.resource_graph.resources)} 资源，三份产物三个文件",
         ),
         "recovery_lands_on_last_clean_checkpoint": (
-            all(a.checkpoint == t.checkpoint for a, t in _matched(result)),
-            f"checkpoint 全对 {sum(1 for a, t in _matched(result) if a.checkpoint == t.checkpoint)}/{len(_matched(result))}",
+            all(a.checkpoint == t.checkpoint for a, t in matched),
+            f"checkpoint 全对 {sum(1 for a, t in matched if a.checkpoint == t.checkpoint)}/{len(matched)}",
         ),
     }
 
@@ -242,9 +245,10 @@ def acceptance_checks(result: Any) -> list[dict[str, Any]]:
     n_roots = len(result.run.truths)
     recall = ver.n_roots_recovered / max(1, n_roots)
     fp = len(rec.unattributed)
-    n_matched = max(1, len(_matched(result)))
-    five_rate = _five_answer_hits(result) / n_matched
-    chain_rate = _chain_hits(result) / n_matched
+    matched = _matched(result)
+    n_matched = max(1, len(matched))
+    five_rate = _five_answer_hits(result, matched) / n_matched
+    chain_rate = _chain_hits(result, matched) / n_matched
 
     off_err = max((abs(r.estimated_offset_s - r.injected_offset_s) for r in al.reports), default=0.0)
     drift_err = max((abs(r.estimated_drift_s_per_s - r.injected_drift_s_per_s) for r in al.reports), default=0.0)

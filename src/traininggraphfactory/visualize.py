@@ -689,5 +689,6 @@ def render_html(result: Any, *, rows: Sequence[Mapping[str, Any]] | None = None)
 def _rate(result: Any, which: str) -> float:
     from .report import _chain_hits, _five_answer_hits, _matched
 
-    n = max(1, len(_matched(result)))
-    return (_five_answer_hits(result) if which == "five" else _chain_hits(result)) / n
+    matched = _matched(result)
+    n = max(1, len(matched))
+    return (_five_answer_hits(result, matched) if which == "five" else _chain_hits(result, matched)) / n
