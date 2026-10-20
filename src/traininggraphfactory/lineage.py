@@ -128,6 +128,11 @@ class Lineage:
     def __init__(self) -> None:
         self._nodes: dict[str, Node] = {}
         self._edges: set[tuple[str, str, str]] = set()
+        # 邻接索引。`parents` / `children` 原来每次都扫全边集，于是 `roots` /
+        # `leaves` / `path_to_root` 都是 O(节点 × 边)。索引只在 `add_edge`（唯一的
+        # 加边入口）里同步，两边不会漂。
+        self._parents: dict[str, set[str]] = {}
+        self._children: dict[str, set[str]] = {}
 
     def add_node(self, node_id: str, kind: str, label: str = "", **meta: Any) -> Node:
         if node_id in self._nodes:
@@ -141,6 +146,8 @@ class Lineage:
             if end not in self._nodes:
                 raise ValueError(f"边 {src}->{dst} 的端点 {end!r} 不在图里")
         self._edges.add((src, dst, label))
+        self._parents.setdefault(dst, set()).add(src)
+        self._children.setdefault(src, set()).add(dst)
 
     # -- 查询 --------------------------------------------------------------
 
@@ -161,10 +168,10 @@ class Lineage:
         return tuple(Edge(*t) for t in sorted(self._edges))
 
     def parents(self, node_id: str) -> tuple[str, ...]:
-        return tuple(sorted({s for s, d, _ in self._edges if d == node_id}))
+        return tuple(sorted(self._parents.get(node_id, ())))
 
     def children(self, node_id: str) -> tuple[str, ...]:
-        return tuple(sorted({d for s, d, _ in self._edges if s == node_id}))
+        return tuple(sorted(self._children.get(node_id, ())))
 
     def roots(self) -> tuple[str, ...]:
         return tuple(n.id for n in self.nodes if not self.parents(n.id))
