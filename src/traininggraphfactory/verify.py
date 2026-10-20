@@ -197,8 +197,12 @@ def verify(
         alpha, _sigma, log_space = alpha_of(base_table, signal, step, cfg)
 
         # ---- P：去掉它，目标信号要动 ----
+        # 「去掉这个根因」的运行同时是 P 探针与反事实反向链的输入。两边各跑一遍
+        # 模拟 + 对齐在结果上等价（模拟是确定性的），但平白多付一次整条流水线的成本。
         without = [r for r in roots if str(r["id"]) != rid]
-        _, t_without = _table(cfg, without)
+        run_w = _run_with(cfg, without)
+        al_w = align(run_w, cfg)
+        t_without = al_w.step_table
         d_p = _delta(base_table, t_without, signal, step, log_space)
         suff_p = _suffices(d_p, alpha)
         probes.append(ProbeResult(key, "P", signal, step, d_p, alpha, suff_p, True, suff_p))
@@ -244,8 +248,8 @@ def verify(
         )
 
         # ---- 反事实反向链：去掉它，重跑整条流水线，看归因是否消失 ----
-        run_w, table_w = _table(cfg, without)
-        rec_w = recover(run_w, table_w, detect(table_w, cfg), cfg, align(run_w, cfg))
+        # `run_w` / `t_without` 就是上面 P 探针那一次运行，直接复用。
+        rec_w = recover(run_w, t_without, detect(t_without, cfg), cfg, al_w)
         same_kind = sum(1 for x in rec_w.attributions if x.root_cause_kind == kind)
         near = [x for x in rec_w.attributions if x.root_cause_kind == kind and abs(x.when_step - step) <= 2]
         checks.append(
