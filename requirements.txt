@@ -1,0 +1,8 @@
+# TrainingGraphFactory —— 核心链路零第三方依赖。
+#
+# 不需要 `pip install`，也不需要激活 venv：`python main.py run` 直接可用。
+# 下面这些是**扩展点**，只有要接真实的训练框架 / 画图时才需要，
+# 而且它们在核心链路里一律抛 NotImplementedError（见各模块的扩展点说明）。
+#
+# torch>=2.2        # 真实训练运行时接入点（events.py 的 TorchEventSource）
+# matplotlib>=3.8   # 把 out/ 里的曲线画成 PNG（visualize.py 的扩展点）

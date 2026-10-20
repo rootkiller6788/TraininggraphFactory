@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "traininggraphfactory"
+version = "0.1.0"
+description = "TrainingGraphFactory —— 训练运行时的事件流 → 三张独立的图 → 跨信号因果归因（零第三方依赖）"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+# 重型接入点一律写成抛 NotImplementedError 的扩展点，不放进核心链路。
+torch = ["torch>=2.2"]
+plot = ["matplotlib>=3.8"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+addopts = "-q"

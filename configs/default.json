@@ -1,0 +1,251 @@
+{
+  "seed": 20260930,
+
+  "run": {
+    "steps": 120,
+    "batch_size": 8,
+    "seq_len": 64,
+    "length_cv": 0.32,
+    "base_lr": 0.0003,
+    "warmup_steps": 8,
+    "grad_clip": 1.0,
+    "micro_batch": 2,
+    "grad_accum": 4,
+    "max_seq_len": 256,
+    "precision": "bf16",
+    "ckpt_every": 12,
+    "eval_every": 10,
+    "loss0": 4.2,
+    "loss_decay": 0.971,
+    "loss_noise": 0.045,
+    "grad_norm_base": 0.85,
+    "grad_norm_sigma": 0.28,
+    "base_compute_ms": 300.0,
+    "per_token_ms": 0.30,
+    "overhead_ms": 120.0,
+    "ckpt_write_ms": 520.0,
+    "eval_ms": 320.0,
+    "recover_ms": 1400.0,
+    "bytes_per_param": 2,
+    "params_m": 740,
+    "vram_opt_mult": 2.0,
+    "bytes_per_token_activation": 24000.0,
+    "net_mbps_base": 180.0,
+    "disk_mbps_write": 420.0,
+    "disk_mbps_stall": 24.0
+  },
+
+  "sources": [
+    {
+      "id": "job",
+      "kind": "job",
+      "clock_offset_s": 0.0,
+      "drift_s_per_s": 0.0,
+      "sample_hz": null,
+      "carries_step": true,
+      "note": "参考时钟：只有它带 step 号，所以偏移不可辨识，按定义取 0。"
+    },
+    {
+      "id": "metric",
+      "kind": "metric",
+      "clock_offset_s": 0.37,
+      "drift_s_per_s": 0.0,
+      "sample_hz": 4.0,
+      "carries_step": false,
+      "note": "loss / grad_norm 采样器。"
+    },
+    {
+      "id": "resource",
+      "kind": "resource",
+      "clock_offset_s": -0.21,
+      "drift_s_per_s": 0.006,
+      "sample_hz": 8.0,
+      "carries_step": false,
+      "note": "GPU/RAM/Disk 采样器。**它在线性漂移** —— 常数偏移不够用。"
+    },
+    {
+      "id": "io",
+      "kind": "io",
+      "clock_offset_s": 1.13,
+      "drift_s_per_s": 0.0,
+      "sample_hz": null,
+      "carries_step": false,
+      "note": "dataloader 读批 / checkpoint 写盘。"
+    }
+  ],
+
+  "beacon": {
+    "every_steps": 12,
+    "jitter_s": 0.004,
+    "drop_prob": 0.0,
+    "note": "同步信标：每个 sink 用自己的本地时钟记一条 sync 记录。序号对应关系不依赖时间戳。"
+  },
+
+  "causal_model": {
+    "lr_spike": {
+      "primary_signal": "loss",
+      "config_key": "train.lr",
+      "resource": "GPU0",
+      "recovery": "revert_config",
+      "signature": ["config_change", "grad_norm_z", "loss_z"]
+    },
+    "bad_batch": {
+      "primary_signal": "step_time_s",
+      "config_key": "data.max_seq_len",
+      "resource": "CPU",
+      "recovery": "skip_batch",
+      "signature": ["batch_tokens_z", "step_time_z", "cpu_z"]
+    },
+    "vram_pressure": {
+      "primary_signal": "vram_bytes",
+      "config_key": "train.micro_batch",
+      "resource": "VRAM",
+      "recovery": "reduce_micro_batch",
+      "signature": ["vram_z", "step_time_z", "gpu_util_z_drop"]
+    },
+    "disk_stall": {
+      "primary_signal": "disk_mbps",
+      "config_key": "ckpt.every",
+      "resource": "Disk",
+      "recovery": "retry_write",
+      "signature": ["disk_z_drop", "ckpt_write_z", "step_time_z"]
+    },
+    "eval_regression": {
+      "primary_signal": "eval_loss",
+      "config_key": "data.eval_slice",
+      "resource": "Disk",
+      "recovery": "rerun_eval",
+      "signature": ["eval_loss_z", "disk_z_drop", "step_time_z"],
+      "note": "第三条签名是**一个人为的信念**：「评测读数变差，评测这一趟也会更慢」。流水线会告诉你它从来没有兑现过。"
+    },
+    "nan_grad": {
+      "primary_signal": "loss",
+      "config_key": "train.grad_clip",
+      "resource": "GPU0",
+      "recovery": "resume_from_checkpoint",
+      "signature": ["grad_norm_z", "loss_nan", "state_failed", "gpu_util_z_drop", "ckpt_restore"]
+    }
+  },
+
+  "root_causes": [
+    {
+      "id": "rc-lr",
+      "kind": "lr_spike",
+      "at_step": 42,
+      "duration_steps": 6,
+      "magnitude": 8.0,
+      "note": "学习率 ×8 六步。先炸 grad_norm，再抬 loss。"
+    },
+    {
+      "id": "rc-batch",
+      "kind": "bad_batch",
+      "at_step": 55,
+      "duration_steps": 1,
+      "magnitude": 8.0,
+      "note": "一个超长批：tokens ×8、host 侧开销 ×10 ⇒ GPU 空转。"
+    },
+    {
+      "id": "rc-vram",
+      "kind": "vram_pressure",
+      "at_step": 62,
+      "duration_steps": 8,
+      "magnitude": 1.5,
+      "note": "显存压力：VRAM 抬升、分配器重试 ⇒ step_time 变长。与 rc-disk 相隔 2 步，正好检验「事件簇能不能分开」。"
+    },
+    {
+      "id": "rc-disk",
+      "kind": "disk_stall",
+      "at_step": 72,
+      "duration_steps": 3,
+      "magnitude": 5.0,
+      "note": "正好压在 checkpoint 步上：写盘 ×5，磁盘吞吐塌陷。"
+    },
+    {
+      "id": "rc-eval",
+      "kind": "eval_regression",
+      "at_step": 90,
+      "duration_steps": 1,
+      "magnitude": 1.9,
+      "note": "评测集读数跳变，只在 eval 步可见。"
+    },
+    {
+      "id": "rc-nan",
+      "kind": "nan_grad",
+      "at_step": 97,
+      "duration_steps": 1,
+      "magnitude": 1.0,
+      "note": "loss 变 nan ⇒ 状态机走 TRAINING→FAILED→RECOVER→TRAINING。"
+    }
+  ],
+
+  "detect": {
+    "k": 6.0,
+    "mad_floor_ratio": 0.02,
+    "min_episode_steps": 1,
+    "stratify_by_step_type": true,
+    "min_stratum_size": 4,
+    "detrend": true,
+    "detrend_span": 4.0,
+    "stratum_fallback": "none",
+    "monitored": [
+      "loss",
+      "grad_norm",
+      "step_time_s",
+      "gpu0_util",
+      "vram_bytes",
+      "disk_mbps",
+      "ckpt_write_s",
+      "eval_loss",
+      "batch_tokens",
+      "cpu_util"
+    ],
+    "note": "稳健 z = (x − median) / max(1.4826·MAD, floor)。NaN 一律显式判异常，不走 z。非计算步（ckpt/eval）必须单独建模基线。"
+  },
+
+  "align": {
+    "residual_tol_s": 0.05,
+    "drift_tol_s_per_s": 0.0005,
+    "min_beacons": 4,
+    "max_step_assign_error": 0.15,
+    "note": "残差超容差 / 缺 beacon / 漂移未被建模，都必须报错，不许静默退回 0 偏移。"
+  },
+
+  "causal": {
+    "lag_max_steps": 6,
+    "min_signature_hit": 0.5,
+    "primary_tol_steps": 1,
+    "alpha_sigma": 1.0,
+    "tie_break_proximity": true,
+    "note": "声明的因果模型：每个根因一条**有序签名**。签名只声明，是否真的出现由事件流决定。"
+  },
+
+  "acceptance": {
+    "min_anomaly_recall": 1.0,
+    "max_anomaly_false_positives": 0,
+    "min_five_answer_rate": 0.8,
+    "min_chain_exact_rate": 0.6,
+    "max_offset_error_s": 0.05,
+    "max_drift_error_s_per_s": 0.0005,
+    "min_alignment_lift": 0.2,
+    "min_state_coverage": 6,
+    "min_resource_coverage": 7,
+    "min_job_nodes": 20
+  },
+
+  "expectations": {
+    "alignment_is_necessary": true,
+    "constant_clock_offset_suffices": true,
+    "single_global_baseline_suffices": true,
+    "declared_signatures_all_materialize": true,
+    "declared_causal_model_attributes_uniquely": true,
+    "all_injected_anomalies_detected": true,
+    "no_false_positive_anomalies": true,
+    "three_graphs_separately_queryable": true,
+    "recovery_lands_on_last_clean_checkpoint": true
+  },
+
+  "report": {
+    "title": "TrainingGraphFactory —— 训练运行时的数字孪生",
+    "records_preview": 12
+  }
+}
