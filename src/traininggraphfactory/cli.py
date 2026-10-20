@@ -598,9 +598,14 @@ def cmd_events(args: argparse.Namespace) -> int:
     events = load_events(path)
     by_source: dict[str, int] = {}
     by_kind: dict[str, int] = {}
+    # 「这一路带不带 step 号」在扫一遍事件流时顺手记下 —— 打印时再
+    # `load_events(path)` 逐个来源重扫，等于把整份 JSONL 反复读 N 遍。
+    carries_step: dict[str, bool] = {}
     for e in events:
         by_source[e.source] = by_source.get(e.source, 0) + 1
         by_kind[e.kind] = by_kind.get(e.kind, 0) + 1
+        if e.step is not None:
+            carries_step[e.source] = True
     if args.source:
         events = tuple(e for e in events if e.source == args.source)
     if args.json:
@@ -619,7 +624,7 @@ def cmd_events(args: argparse.Namespace) -> int:
     print()
     print(_row([("来源", 12), ("事件数", 10), ("是否带 step", 12)]))
     for s, n in sorted(by_source.items()):
-        carries = any(e.source == s and e.step is not None for e in load_events(path))
+        carries = carries_step.get(s, False)
         print(_row([(s, 12), (str(n), 10), ("是" if carries else "否（必须靠对齐）", 12)]))
     print()
     print(_row([("事件类型", 18), ("个数", 8)]))
