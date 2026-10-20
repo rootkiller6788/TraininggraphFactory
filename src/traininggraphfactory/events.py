@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import bisect
 import json
 import math
 from dataclasses import dataclass
@@ -512,6 +513,8 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
         emit("job", "state_change", t_true, steps - 1, {"frm": "TRAINING", "to": "DONE", "reason": "run_complete"})
 
     # ---- 事件：metric / resource 采样（按各自时钟的固定频率）
+    # 采样点有几百个，而 traces 的起点按时间单调；把起点表建一次，归属就退化成二分。
+    trace_starts = [tr.t_true_begin for tr in traces]
     for spec in source_specs:
         if spec.sample_hz is None:
             continue
@@ -524,7 +527,7 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
             t_sample = (t_local - spec.clock_offset_s) / (1.0 + spec.drift_s_per_s)
             if t_sample < 0.0 or t_sample > t_true:
                 continue
-            tr = _trace_at(traces, t_sample)
+            tr = _trace_at(traces, trace_starts, t_sample)
             if tr is None:
                 continue
             if spec.kind == "metric":
@@ -605,14 +608,21 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
     )
 
 
-def _trace_at(traces: list[StepTrace], t: float) -> StepTrace | None:
+def _trace_at(traces: list[StepTrace], starts: list[float], t: float) -> StepTrace | None:
     """真时间 → 所属的步。步长可变（这正是异常造成的），所以必须**按实际边界查**，
-    不能拿「平均步长」去除。"""
-    for tr in traces:
-        if tr.t_true_begin <= t < tr.t_true_end:
-            return tr
-    if traces and t >= traces[-1].t_true_end:
-        return traces[-1]
+    不能拿「平均步长」去除。
+
+    `starts` 是 `traces` 的起点表（调用方建一次）。步起点按时间单调，于是这里
+    用二分而不是线性扫描 —— 采样点有几百个，线性扫 120 步会让这一步变成
+    `simulate` 里最费时的循环之一。语义与「逐条找包含区间」完全一致：
+    最后一步之后的时间仍归最后一步，第一步之前的时间没有归属。
+    """
+    i = bisect.bisect_right(starts, t) - 1
+    if i < 0:
+        return None
+    tr = traces[i]
+    if t < tr.t_true_end or i == len(traces) - 1:
+        return tr
     return None
 
 
