@@ -283,6 +283,11 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
     # 待归属的事件：不带 step 号、又不是信标的那些
     pending = [e for e in run.events if e.source != _REFERENCE_SOURCE and e.kind != "sync"]
 
+    # 真值只用于**打分**，而且与「试哪种模型」无关。它在模型循环里被反复调用
+    # （每种假设都会把每一条事件判一次），所以在这里一次算清 —— 否则三种假设
+    # 会把同一件事做三遍。真值仍然不参与估计。
+    truth_step_by_event = {id(e): truth_step_of(e) for e in pending}
+
     reports: list[AlignmentReport] = []
     candidates: list[tuple[str, tuple[AlignmentModel, ...]]] = []
     chosen: dict[str, str] = {}
@@ -332,7 +337,7 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
                     n_bad += 1
                     continue
                 n_ok += 1
-                ts = truth_step_of(e)
+                ts = truth_step_by_event.get(id(e))
                 if ts is not None and ts != st:
                     n_wrong += 1
             models.append(
