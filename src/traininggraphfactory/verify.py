@@ -326,9 +326,11 @@ def _alignment_ablations(
     """
     total = len(roots)
     out: list[AlignmentAblation] = []
+    # 每个消融档位只换「允许哪些对齐假设」，模拟输入完全相同 —— 模拟器是确定性的，
+    # 跑一遍就够。`align` 只读 run，不会把它改脏。
+    run = simulate(cfg)
     for only in ALIGN_ABLATIONS:
         try:
-            run = simulate(cfg)
             al = align(run, cfg, only=only)
             table = al.step_table
             det = detect(table, cfg)
