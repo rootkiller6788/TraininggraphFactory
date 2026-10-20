@@ -74,6 +74,22 @@ ALIGNED_SIGNALS: tuple[tuple[str, str, str, str], ...] = (
 # 这几个来自 `job` 自己的事件，**不需要对齐**（它们本来就带 step 号）。
 JOB_SIGNALS: tuple[str, ...] = ("step_time_s", "throughput", "lr")
 
+
+def _aligned_index() -> dict[tuple[str, str], tuple[tuple[str, str], ...]]:
+    """`(来源, 事件类型) → ((payload 键, 信号名), ...)`。
+
+    逐条事件扫整张 `ALIGNED_SIGNALS` 是这里最容易被忽略的开销：每次对齐要过
+    上千条事件，而一条事件只可能命中其中一种 `(来源, 类型)`。先把表翻成索引，
+    命中判断就退化成一次 dict 查找 —— 结果与线性扫描逐位相同。
+    """
+    out: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for src, kind, key, sig in ALIGNED_SIGNALS:
+        out.setdefault((src, kind), []).append((key, sig))
+    return {k: tuple(v) for k, v in out.items()}
+
+
+_ALIGNED_BY_EVENT = _aligned_index()
+
 _REFERENCE_SOURCE = "job"
 
 
@@ -405,9 +421,7 @@ def _build_step_table(
         if st is None:
             continue
         n_assigned += 1
-        for src, kind, key, sig in ALIGNED_SIGNALS:
-            if e.source != src or e.kind != kind:
-                continue
+        for key, sig in _ALIGNED_BY_EVENT.get((e.source, e.kind), ()):
             v = e.payload.get(key)
             if v is None:
                 continue
