@@ -80,14 +80,19 @@ def build_resource_graph(step_table: Sequence[StepSignal], cfg: Mapping[str, Any
             z = b.z(v, ss.step)
             bad_z[r][ss.step] = z if RESOURCE_HIGH_IS_BAD[r] else -z
 
+    # 步号 → 逐步信号。不能直接拿 `peak_step` 去索引 `step_table`：那假设了步号
+    # 恰好等于列表下标（当前输入下成立，但这不是这个函数的契约）。
+    by_step = {ss.step: ss for ss in step_table}
+
     pressure: list[ResourcePressure] = []
     for r in RESOURCES:
         zs = bad_z[r]
         if not zs:
             continue
-        peak_step = max(sorted(zs), key=lambda s: (zs[s], -s))
+        # 峰值：z 最大；打平时取步号最小的（与「按步号升序后取最大」等价，但不排序）。
+        peak_step = min(zs, key=lambda s: (-zs[s], s))
         sig = RESOURCE_SIGNAL[r]
-        ss = step_table[peak_step]
+        ss = by_step[peak_step]
         v = ss.get(sig)
         b = _baseline_for(table, sig, step_kind(ss))
         pressure.append(
