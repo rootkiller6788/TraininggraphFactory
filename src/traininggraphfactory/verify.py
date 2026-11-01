@@ -120,33 +120,50 @@ def _scale_of(
     signal: str,
     step: int,
     cfg: Mapping[str, Any],
+    *,
+    baselines: Mapping[tuple[str, str], Any] | None = None,
+    kind: str | None = None,
 ) -> tuple[float, bool]:
-    """目标信号在该步所属分层上的噪音尺度（与检出共用同一套基线）。"""
-    dcfg = cfg["detect"]
-    bl = stratified_baselines(
-        table,
-        [signal],
-        float(dcfg["mad_floor_ratio"]),
-        min_stratum_size=int(dcfg["min_stratum_size"]),
-        fallback_kind="all",
-        detrend=bool(dcfg.get("detrend", True)),
-        span=float(dcfg.get("detrend_span", 4.0)),
-    )
-    kind = "all"
-    for ss in table:
-        if ss.step == step:
-            kind = step_kind(ss)
-            break
-    b = bl.get((signal, kind)) or bl.get((signal, "all"))
+    """目标信号在该步所属分层上的噪音尺度（与检出共用同一套基线）。
+
+    `baselines` / `kind` 可预计算后传入：同一张表上反复问同一个信号时，
+    拟合一次分层基线就够；步类型查表也不必每次线性扫过整张表。
+    """
+    if baselines is None:
+        dcfg = cfg["detect"]
+        baselines = stratified_baselines(
+            table,
+            [signal],
+            float(dcfg["mad_floor_ratio"]),
+            min_stratum_size=int(dcfg["min_stratum_size"]),
+            fallback_kind="all",
+            detrend=bool(dcfg.get("detrend", True)),
+            span=float(dcfg.get("detrend_span", 4.0)),
+        )
+    if kind is None:
+        kind = "all"
+        for ss in table:
+            if ss.step == step:
+                kind = step_kind(ss)
+                break
+    b = baselines.get((signal, kind)) or baselines.get((signal, "all"))
     if b is None:
         return 0.0, False
     return b.scale, b.log_space
 
 
-def alpha_of(table: Sequence[StepSignal], signal: str, step: int, cfg: Mapping[str, Any]) -> tuple[float, float, bool]:
+def alpha_of(
+    table: Sequence[StepSignal],
+    signal: str,
+    step: int,
+    cfg: Mapping[str, Any],
+    *,
+    baselines: Mapping[tuple[str, str], Any] | None = None,
+    kind: str | None = None,
+) -> tuple[float, float, bool]:
     """`(α, σ, log_space)`。α = `alpha_sigma × σ`。"""
     a_sigma = float(cfg["causal"].get("alpha_sigma", 1.0))
-    sigma, log_space = _scale_of(table, signal, step, cfg)
+    sigma, log_space = _scale_of(table, signal, step, cfg, baselines=baselines, kind=kind)
     return a_sigma * sigma, sigma, log_space
 
 
@@ -183,6 +200,35 @@ def verify(
     roots = _roots_of(cfg)
     a_sigma = float(cfg["causal"].get("alpha_sigma", 1.0))
 
+    # 分层基线只依赖「表 + 信号」，与步号无关；同一次校验里 `base_table` 不变，
+    # 所以每个信号只拟合一次（F 探针的对照信号在六个归因上是同一个）。
+    # 步类型也一次算好，省掉每次 `_scale_of` 都线性扫一遍表。
+    kind_by_step = {ss.step: step_kind(ss) for ss in base_table}
+    baseline_cache: dict[str, Mapping[tuple[str, str], Any]] = {}
+
+    def alpha_for(signal: str, step: int) -> tuple[float, float, bool]:
+        bl = baseline_cache.get(signal)
+        if bl is None:
+            dcfg = cfg["detect"]
+            bl = stratified_baselines(
+                base_table,
+                [signal],
+                float(dcfg["mad_floor_ratio"]),
+                min_stratum_size=int(dcfg["min_stratum_size"]),
+                fallback_kind="all",
+                detrend=bool(dcfg.get("detrend", True)),
+                span=float(dcfg.get("detrend_span", 4.0)),
+            )
+            baseline_cache[signal] = bl
+        return alpha_of(
+            base_table,
+            signal,
+            step,
+            cfg,
+            baselines=bl,
+            kind=kind_by_step.get(step, "all"),
+        )
+
     probes: list[ProbeResult] = []
     checks: list[CounterfactualCheck] = []
     curves: list[AlphaCurve] = []
@@ -207,7 +253,7 @@ def verify(
             continue
         rid = str(match["id"])
 
-        alpha, _sigma, log_space = alpha_of(base_table, signal, step, cfg)
+        alpha, _sigma, log_space = alpha_for(signal, step)
 
         # ---- P：去掉它，目标信号要动 ----
         # 「去掉这个根因」的运行同时是 P 探针与反事实反向链的输入。两边各跑一遍
@@ -225,7 +271,7 @@ def verify(
         if f_sig is None:
             probes.append(ProbeResult(key, "F", "", step, 0.0, alpha, False, False, True, "没有可用的不敏感信号"))
         else:
-            alpha_f, _s2, log_f = alpha_of(base_table, f_sig, step, cfg)
+            alpha_f, _s2, log_f = alpha_for(f_sig, step)
             d_f = _delta(base_table, t_without, f_sig, step, log_f)
             suff_f = _suffices(d_f, alpha_f)
             probes.append(ProbeResult(key, "F", f_sig, step, d_f, alpha_f, suff_f, False, not suff_f))
