@@ -446,19 +446,34 @@ def _build_step_table(
         if st is None:
             continue
         n_assigned += 1
-        for key, sig in _ALIGNED_BY_EVENT.get((e.source, e.kind), ()):
+        signals = _ALIGNED_BY_EVENT.get((e.source, e.kind))
+        if not signals:
+            continue
+        step_vals = by_step[st]
+        n_vals = 0
+        for key, sig in signals:
             v = e.payload.get(key)
             if v is None:
                 continue
-            if not isinstance(v, (int, float)) or isinstance(v, bool):
-                continue
-            if isinstance(v, float) and math.isnan(v):
+            # 载荷绝大多数是 float，先判它、再退回 int 的子类判定 ——
+            # 判定结果与 `isinstance(v, (int, float)) and not isinstance(v, bool)` 完全一致。
+            if isinstance(v, float):
                 # NaN 要**留在表里**：它不是「没测到」，它是「测到了，值就是 nan」。
                 # 检出模块会显式判它，而不是靠容差比较 —— 拿 nan 去比大小永远是 False。
-                by_step[st].setdefault(sig, []).append(float("nan"))
+                x = float("nan") if math.isnan(v) else float(v)
+            elif isinstance(v, int) and not isinstance(v, bool):
+                x = float(v)
             else:
-                by_step[st].setdefault(sig, []).append(float(v))
-            contrib[st][e.source] = contrib[st].get(e.source, 0) + 1
+                continue
+            bucket = step_vals.get(sig)
+            if bucket is None:
+                bucket = step_vals[sig] = []
+            bucket.append(x)
+            n_vals += 1
+        if n_vals:
+            # 计数按「来源贡献了几个数值」累加，不必每个值都去查一次来源表。
+            src_counts = contrib[st]
+            src_counts[e.source] = src_counts.get(e.source, 0) + n_vals
 
     # `job` 自带的三个信号：不需要对齐，直接从带 step 号的事件里读
     job_vals: dict[int, dict[str, float]] = {s: {} for s in step_ids}
