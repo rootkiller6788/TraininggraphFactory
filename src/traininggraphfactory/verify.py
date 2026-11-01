@@ -31,6 +31,7 @@ from .config import causal_model_of, signatures_of
 from .detect import detect
 from .events import simulate
 from .recover import group_key, recover
+from .rng import canonical_json
 from .schema import (
     ROOT_CAUSE_KINDS,
     AlignmentAblation,
@@ -87,6 +88,16 @@ def _scaled(root: Mapping[str, Any], f: float) -> dict[str, Any]:
 def _table(cfg: Mapping[str, Any], roots: Sequence[Mapping[str, Any]]) -> tuple[Any, tuple[StepSignal, ...]]:
     run = _run_with(cfg, roots)
     return run, align(run, cfg).step_table
+
+
+def _roots_key(roots: Sequence[Mapping[str, Any]]) -> str:
+    """一组根因的规范键：**全部字段**都要进键，列表顺序也保留。
+
+    只看 `magnitude` 或只看 `f` 都不够：`nan_grad` 的幅度本来就是 1，
+    它的整条标定曲线是同一个配置；而两个不同的根因碰巧幅度相同，却是
+    两次不同的运行。规范序列化顺带把字典键序固定住。
+    """
+    return canonical_json(list(roots))
 
 
 def _value(table: Sequence[StepSignal], step: int, signal: str) -> float | None:
@@ -268,16 +279,25 @@ def verify(
         # 基线取**幅度压到 1（等价于没有效果）**的那一次运行，不是原运行 ——
         # 拿原运行当基线的话，曲线会从「满效果」走到 0，方向是反的，
         # 而我们要回答的是「幅度小到什么程度就不再是原因」。
-        _, t_zero = _table(cfg, [(_scaled(r, 0.0) if str(r["id"]) == rid else dict(r)) for r in roots])
+        zero_roots = [(_scaled(r, 0.0) if str(r["id"]) == rid else dict(r)) for r in roots]
+        # 同一份根因配置只模拟一次。这张表能接住三类重复：
+        # f=1 就是原配置、f=0 就是 t_zero、以及幅度本来就是 1 的根因
+        # （nan_grad）整条曲线退化成同一个配置。键取完整字段而不是 f ——
+        # 「幅度恰好等于原值」与「f 恰好等于 1」不是同一件事，不能混。
+        table_memo: dict[str, tuple[StepSignal, ...]] = {_roots_key(roots): base_table}
+        zero_key = _roots_key(zero_roots)
+        t_zero = table_memo.get(zero_key)
+        if t_zero is None:
+            _, t_zero = _table(cfg, zero_roots)
+            table_memo[zero_key] = t_zero
         points: list[tuple[float, float]] = []
         for f in F_SWEEP:
             scaled = [_scaled(r, f) if str(r["id"]) == rid else dict(r) for r in roots]
-            if scaled == roots:
-                # `f=1` 且幅度没有被浮点重算改动 —— 这份配置就是原配置，
-                # 事件流与逐步信号表都与基线逐位相同，不必再跑一次模拟器。
-                t_f = base_table
-            else:
+            memo_key = _roots_key(scaled)
+            t_f = table_memo.get(memo_key)
+            if t_f is None:
                 _, t_f = _table(cfg, scaled)
+                table_memo[memo_key] = t_f
             d = _delta(t_zero, t_f, signal, step, log_space)
             if math.isinf(d):
                 ratio = float("inf")
