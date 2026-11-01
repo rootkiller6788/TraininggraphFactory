@@ -293,6 +293,11 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
     chosen: dict[str, str] = {}
     chosen_fit: dict[str, tuple[float, float]] = {}
 
+    # 步归属是逐事件的热路径（每次对齐要判上千次，而且每种假设都要判一遍）。
+    # `assign_step` 的逻辑本身只有一个二分 + 两个区间检查，函数调用开销与
+    # 二分本身同量级 —— 在这个循环里就地展开，判定与返回值逐位不变。
+    bisect_right = bisect.bisect_right
+
     for sid in sorted(specs):
         sp = specs[sid]
         if sid == _REFERENCE_SOURCE:
@@ -332,13 +337,18 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
             n_bad = 0
             n_wrong = 0
             for e in mine:
-                st = assign_step((e.t_local - a) / b, starts, bounds)
-                if st is None:
+                t_ref = (e.t_local - a) / b
+                i = bisect_right(starts, t_ref) - 1
+                if i < 0:
+                    n_bad += 1
+                    continue
+                assigned, b0, b1 = bounds[i]
+                if t_ref < b0 or t_ref >= b1:
                     n_bad += 1
                     continue
                 n_ok += 1
                 ts = truth_step_by_event.get(id(e))
-                if ts is not None and ts != st:
+                if ts is not None and ts != assigned:
                     n_wrong += 1
             models.append(
                 AlignmentModel(
@@ -420,10 +430,16 @@ def _build_step_table(
     contrib: dict[int, dict[str, int]] = {s: {} for s in step_ids}
     n_assigned = 0
 
+    # 与 `align` 里的模型循环同一条热路径：就地展开 `assign_step`。
+    bisect_right = bisect.bisect_right
     for e in pending:
         a, b = fits[e.source]
-        st = assign_step((e.t_local - a) / b, starts, bounds)
-        if st is None:
+        t_ref = (e.t_local - a) / b
+        i = bisect_right(starts, t_ref) - 1
+        if i < 0:
+            continue
+        st, b0, b1 = bounds[i]
+        if t_ref < b0 or t_ref >= b1:
             continue
         n_assigned += 1
         for key, sig in _ALIGNED_BY_EVENT.get((e.source, e.kind), ()):
