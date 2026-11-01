@@ -500,7 +500,13 @@ def _build_step_table(
 
 def _mean(xs: Sequence[float]) -> float:
     """步内聚合用均值。**只要有一条是 nan，这一步就是 nan** ——
-    把 nan 平均掉会得到一个看起来很正常的数，那比没有数更糟。"""
-    if any(math.isnan(x) for x in xs):
+    把 nan 平均掉会得到一个看起来很正常的数，那比没有数更糟。
+
+    判 NaN 不必先扫一遍生成器：只要有一条是 nan，`sum` 的结果就一定是
+    nan（nan 会沿加法传播）。先求和再判，省掉生成器对象的构造与一次全表
+    遍历；`sum` 本身不动，因此逐位结果与原来完全一致。
+    """
+    total = sum(xs)
+    if math.isnan(total):
         return float("nan")
-    return sum(xs) / len(xs)
+    return total / len(xs)
