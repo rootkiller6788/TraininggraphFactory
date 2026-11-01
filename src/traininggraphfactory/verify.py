@@ -175,6 +175,8 @@ def verify(
     cfg: Mapping[str, Any],
     base_table: Sequence[StepSignal],
     attributions: Sequence[Attribution],
+    *,
+    base_run: Any | None = None,
 ) -> VerifyResult:
     model = causal_model_of(cfg)
     sigs = signatures_of(cfg)
@@ -319,7 +321,7 @@ def verify(
         counterfactuals=tuple(checks),
         curves=tuple(curves),
         alpha_sigma=a_sigma,
-        ablations=_alignment_ablations(cfg, roots, attributions),
+        ablations=_alignment_ablations(cfg, roots, attributions, base_run),
         n_roots_recovered=_n_recovered(attributions, roots),
     )
 
@@ -341,6 +343,7 @@ def _alignment_ablations(
     cfg: Mapping[str, Any],
     roots: Sequence[Mapping[str, Any]],
     attributions: Sequence[Attribution],
+    base_run: Any | None = None,
 ) -> tuple[AlignmentAblation, ...]:
     """把对齐假设锁进一个子集，**真的重跑整条流水线**，数还剩几条归因。
 
@@ -352,8 +355,9 @@ def _alignment_ablations(
     total = len(roots)
     out: list[AlignmentAblation] = []
     # 每个消融档位只换「允许哪些对齐假设」，模拟输入完全相同 —— 模拟器是确定性的，
-    # 跑一遍就够。`align` 只读 run，不会把它改脏。
-    run = simulate(cfg)
+    # 跑一遍就够。`align` 只读 run，不会把它改脏。流水线手里已经有基线运行，
+    # 直接用；单独调用 `verify` 的路径才回退到自己模拟。
+    run = base_run if base_run is not None else simulate(cfg)
     for only in ALIGN_ABLATIONS:
         try:
             al = align(run, cfg, only=only)

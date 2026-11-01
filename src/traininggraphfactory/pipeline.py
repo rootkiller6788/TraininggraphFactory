@@ -167,7 +167,7 @@ def run_pipeline(cfg: Mapping[str, Any]) -> PipelineResult:
 
     det = detect(step_table, cfg)
     rec = recover(run, step_table, det, cfg, al)
-    ver = verify(cfg, step_table, rec.attributions)
+    ver = verify(cfg, step_table, rec.attributions, base_run=run)
 
     lin = build_lineage(
         run=run,
