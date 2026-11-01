@@ -291,7 +291,10 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
     reports: list[AlignmentReport] = []
     candidates: list[tuple[str, tuple[AlignmentModel, ...]]] = []
     chosen: dict[str, str] = {}
-    chosen_fit: dict[str, tuple[float, float]] = {}
+    # 每种假设下逐事件算出的步号。胜出的那种直接交给建表用 —— 建表时再判
+    # 一遍是纯粹的重复计算（同样的 a、b、starts、bounds，结果必然相同）。
+    # 键是 (来源, 假设名)，值只收「判出了步」的事件（id → 步号）。
+    assigned_by_model: dict[tuple[str, str], dict[int, int]] = {}
 
     # 步归属是逐事件的热路径（每次对齐要判上千次，而且每种假设都要判一遍）。
     # `assign_step` 的逻辑本身只有一个二分 + 两个区间检查，函数调用开销与
@@ -303,7 +306,6 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
         if sid == _REFERENCE_SOURCE:
             # 参考源按定义偏移为 0、不漂移。**这不是假设，是坐标系的选取**。
             chosen[sid] = "identity"
-            chosen_fit[sid] = (0.0, 1.0)
             reports.append(
                 AlignmentReport(
                     source=sid,
@@ -336,6 +338,7 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
             n_ok = 0
             n_bad = 0
             n_wrong = 0
+            assigned_ids: dict[int, int] = {}
             for e in mine:
                 t_ref = (e.t_local - a) / b
                 i = bisect_right(starts, t_ref) - 1
@@ -347,9 +350,11 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
                     n_bad += 1
                     continue
                 n_ok += 1
+                assigned_ids[id(e)] = assigned
                 ts = truth_step_by_event.get(id(e))
                 if ts is not None and ts != assigned:
                     n_wrong += 1
+            assigned_by_model[(sid, name)] = assigned_ids
             models.append(
                 AlignmentModel(
                     model=name,
@@ -388,7 +393,6 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
             )
 
         chosen[sid] = win.model
-        chosen_fit[sid] = (win.a, win.b)
         candidates.append((sid, tuple(models)))
         reports.append(
             AlignmentReport(
@@ -405,7 +409,11 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
             )
         )
 
-    table, n_assigned = _build_step_table(run, step_ids, bounds, starts, chosen_fit, pending)
+    # 参考源没有「待归属事件」（`pending` 已经排除它），不需要映射。
+    winner_steps = {
+        sid: assigned_by_model[(sid, name)] for sid, name in chosen.items() if sid != _REFERENCE_SOURCE
+    }
+    table, n_assigned = _build_step_table(run, step_ids, bounds, winner_steps, pending)
     return AlignmentResult(
         reports=tuple(reports),
         candidates=tuple(candidates),
@@ -421,25 +429,21 @@ def _build_step_table(
     run: Any,
     step_ids: Sequence[int],
     bounds: Sequence[tuple[int, float, float]],
-    starts: Sequence[float],
-    fits: Mapping[str, tuple[float, float]],
+    steps_by_source: Mapping[str, Mapping[int, int]],
     pending: Iterable[Event],
 ) -> tuple[tuple[StepSignal, ...], int]:
-    """逐步信号表：**对齐之后的公共输入**，三张图与检出都读它。"""
+    """逐步信号表：**对齐之后的公共输入**，三张图与检出都读它。
+
+    `steps_by_source` 是胜出假设下逐事件的步号（`id(event) → step`）。
+    没在表里的事件就是「判不出步」，计数上算未归属。
+    """
     by_step: dict[int, dict[str, list[float]]] = {s: {} for s in step_ids}
     contrib: dict[int, dict[str, int]] = {s: {} for s in step_ids}
     n_assigned = 0
 
-    # 与 `align` 里的模型循环同一条热路径：就地展开 `assign_step`。
-    bisect_right = bisect.bisect_right
     for e in pending:
-        a, b = fits[e.source]
-        t_ref = (e.t_local - a) / b
-        i = bisect_right(starts, t_ref) - 1
-        if i < 0:
-            continue
-        st, b0, b1 = bounds[i]
-        if t_ref < b0 or t_ref >= b1:
+        st = steps_by_source[e.source].get(id(e))
+        if st is None:
             continue
         n_assigned += 1
         for key, sig in _ALIGNED_BY_EVENT.get((e.source, e.kind), ()):
