@@ -272,7 +272,12 @@ def verify(
         points: list[tuple[float, float]] = []
         for f in F_SWEEP:
             scaled = [_scaled(r, f) if str(r["id"]) == rid else dict(r) for r in roots]
-            _, t_f = _table(cfg, scaled)
+            if scaled == roots:
+                # `f=1` 且幅度没有被浮点重算改动 —— 这份配置就是原配置，
+                # 事件流与逐步信号表都与基线逐位相同，不必再跑一次模拟器。
+                t_f = base_table
+            else:
+                _, t_f = _table(cfg, scaled)
             d = _delta(t_zero, t_f, signal, step, log_space)
             if math.isinf(d):
                 ratio = float("inf")
