@@ -85,13 +85,15 @@ def theil_sen(xs: Sequence[float], ys: Sequence[float]) -> tuple[float, float]:
         return 0.0, 0.0
     if n == 1:
         return 0.0, ys[0]
-    slopes: list[float] = []
-    for i in range(n - 1):
-        xi, yi = xs[i], ys[i]
-        for j in range(i + 1, n):
-            dx = xs[j] - xi
-            if dx != 0.0:
-                slopes.append((ys[j] - yi) / dx)
+    # 两两斜率直接建成列表。这是 O(n²) 的循环，越简单越好：列表推导省掉
+    # 每轮的名字查找与 append，斜率顺序与逐对 (i, j) 的遍历顺序完全一致，
+    # 因此后面的中位数逐位不变。
+    slopes = [
+        (ys[j] - ys[i]) / dx
+        for i in range(n - 1)
+        for j in range(i + 1, n)
+        if (dx := xs[j] - xs[i]) != 0.0
+    ]
     b = median(slopes) if slopes else 0.0
     a = median([y - b * x for x, y in zip(xs, ys)])
     return b, a
