@@ -168,8 +168,10 @@ def detect(step_table: Sequence[StepSignal], cfg: Mapping[str, Any]) -> DetectRe
         )
         baselines = {(sig, _FALLBACK_KIND): b for (sig, _kk), b in baselines.items() if _kk == _FALLBACK_KIND}
 
-    zs = z_table(step_table, monitored, baselines, allow_fallback=allow_fallback)
-
+    # z 表与异常扫描合成一遍：原来先建整张 `(步, 信号) → z` 再逐格取回，
+    # 同一份数值要走两次循环外加一次 dict 存取。合并后 z 仍然完整保留
+    # （`DetectResult.z` 是报告要用的公开产物），只是顺手判掉命中与 NaN。
+    zs: dict[tuple[int, str], float] = {}
     skipped: dict[str, int] = {sig: 0 for sig in monitored}
     raw: dict[str, list[tuple[int, float, float, bool]]] = {sig: [] for sig in monitored}
     for ss in step_table:
@@ -178,15 +180,21 @@ def detect(step_table: Sequence[StepSignal], cfg: Mapping[str, Any]) -> DetectRe
             v = ss.get(sig)
             if v is None:
                 continue
-            if isinstance(v, float) and math.isnan(v):
-                # 显式分支：NaN 一定异常，且不进 z 通道
-                raw[sig].append((ss.step, float("nan"), float("nan"), True))
-                continue
-            z = zs.get((ss.step, sig))
-            if z is None:
+            is_nan = isinstance(v, float) and math.isnan(v)
+            b = _lookup(baselines, sig, kind, allow_fallback=allow_fallback)
+            if b is None:
                 # 没有基线 = **不判定**，不是「正常」。这两件事必须分开报，
                 # 否则「未判定」会被读成「没问题」。
-                skipped[sig] += 1
+                if is_nan:
+                    # 显式分支：NaN 一定异常，且不进 z 通道
+                    raw[sig].append((ss.step, float("nan"), float("nan"), True))
+                else:
+                    skipped[sig] += 1
+                continue
+            z = b.z(v, ss.step)
+            zs[(ss.step, sig)] = z
+            if is_nan:
+                raw[sig].append((ss.step, float("nan"), float("nan"), True))
                 continue
             bad = z if SIGNAL_HIGH_IS_BAD[sig] else -z
             if bad > k:
