@@ -231,27 +231,35 @@ def fit_baseline(
     """`samples` 是 `(步, 值)`。**只拿有限值拟合** ——
     让 NaN 参与基线，等于让异常定义基线。
     """
-    pairs = [(s, v) for s, v in samples if v is not None and not math.isnan(v)]
-    if not pairs:
+    # 一趟同时抽出 xs / ys：先建一份 `(步, 值)` 中间列表再拆开，等于每项
+    # 多分配一个元组。过滤条件与遍历顺序不变，两个列表逐位一致。
+    xs: list[float] = []
+    ys: list[float] = []
+    for s, v in samples:
+        if v is None or math.isnan(v):
+            continue
+        xs.append(float(s))
+        ys.append(float(v))
+    if not ys:
         return None
-    xs = [float(s) for s, _v in pairs]
-    ys = [float(v) for _s, v in pairs]
     center = median(ys)
 
     log_space = False
-    if detrend and len(pairs) >= 3 and min(ys) > 0.0:
+    if detrend and len(ys) >= 3 and min(ys) > 0.0:
         log_space = (max(ys) / min(ys)) >= span
 
     ts = [math.log(y) for y in ys] if log_space else ys
+    # 变换后中位数只与 ts 有关，算一次就够：原来非对数通道下 ts 就是 ys，
+    # 同一个 `median` 会被白算两遍（趋势拟合与尺度地板各一次）。
+    center_t = median(ts) if log_space else center
     if detrend:
         slope, intercept = theil_sen(xs, ts)
     else:
-        slope, intercept = 0.0, median(ts)
+        slope, intercept = 0.0, center_t
     residuals = [t - (intercept + slope * x) for t, x in zip(ts, xs)]
-    center_t = median(ts)
     scale = robust_scale(residuals, center_t, floor_ratio)
 
-    return Baseline(signal, kind, len(pairs), log_space, slope, intercept, scale, center, center_t)
+    return Baseline(signal, kind, len(ys), log_space, slope, intercept, scale, center, center_t)
 
 
 def stratified_baselines(
