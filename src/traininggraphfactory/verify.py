@@ -61,6 +61,12 @@ ALIGN_ABLATIONS: tuple[tuple[str, ...], ...] = (
 # 否则诱饵的物理会真的漫到目标位置上，那测的就不是「定位性」而是「重叠度」了。
 _DECOY_GAP = 23
 
+# **开关式**根因：幅度对它没有意义，幅度 1 仍然是满效果（见 `events._effects`
+# 里的 `nan_grad` 分支）。除此之外的根因在幅度 1 上对事件流是恒等元 ——
+# 所有乘数都乘 1.0，`nan` 仍为 False。这条性质是 α 曲线零点复用 `without`
+# 运行的前提；将来若是加了新的开关式根因，必须加进这个集合。
+_SWITCH_KINDS = frozenset({"nan_grad"})
+
 
 def _roots_of(cfg: Mapping[str, Any]) -> list[dict[str, Any]]:
     return [dict(r) for r in cfg["root_causes"]]
@@ -336,7 +342,15 @@ def verify(
         zero_key = _roots_key(zero_roots)
         t_zero = table_memo.get(zero_key)
         if t_zero is None:
-            _, t_zero = _table(cfg, zero_roots)
+            if kind not in _SWITCH_KINDS:
+                # 幅度压到 1 的乘性根因在事件流上与「根本没有这个注入」**逐位
+                # 相同**：每个乘数乘 1.0，随机流也不认识根因表；对齐只读事件
+                # （真时钟）与 traces，二者同样不受影响。所以 P 探针那次
+                # `without` 运行可以直接当 α 曲线的零点，每根因少跑一次
+                # 模拟 + 对齐。开关式根因不适用（见 `_SWITCH_KINDS`）。
+                t_zero = t_without
+            else:
+                _, t_zero = _table(cfg, zero_roots)
             table_memo[zero_key] = t_zero
         points: list[tuple[float, float]] = []
         for f in F_SWEEP:
