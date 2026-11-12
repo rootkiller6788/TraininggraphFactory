@@ -269,13 +269,34 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
     beacon_jitter = float(cfg["beacon"]["jitter_s"])
     drop_prob = float(cfg["beacon"]["drop_prob"])
 
+    # 逐步物理用到的常量在循环外取一次。`run` 在一次模拟里是只读的，而这些值
+    # 每一步都要用 —— 原来每步都做一遍字典查找 + `float()` 转换（120 步 × 十余项）。
+    max_seq_len = int(run["max_seq_len"])
+    base_compute_ms = float(run["base_compute_ms"])
+    per_token_ms = float(run["per_token_ms"])
+    base_overhead_ms = float(run["overhead_ms"])
+    recover_ms = float(run["recover_ms"])
+    eval_ms = float(run["eval_ms"])
+    ckpt_write_ms = float(run["ckpt_write_ms"])
+    loss0 = float(run["loss0"])
+    loss_decay = float(run["loss_decay"])
+    loss_noise = float(run["loss_noise"])
+    grad_base = float(run["grad_norm_base"])
+    grad_sigma = float(run["grad_norm_sigma"])
+    params_m = float(run["params_m"])
+    bytes_per_param = float(run["bytes_per_param"])
+    vram_opt_mult = float(run["vram_opt_mult"])
+    bytes_per_activation = float(run["bytes_per_token_activation"])
+    disk_mbps_write = float(run["disk_mbps_write"])
+    net_mbps_base = float(run["net_mbps_base"])
+
     # 初始配置。**它必须在事件流里**，否则「当时用的是哪份配置」无从回答。
     init_config: dict[str, Any] = {
         "train.lr": base_lr,
         "train.micro_batch": int(run["micro_batch"]),
         "train.grad_accum": int(run["grad_accum"]),
         "train.grad_clip": float(run["grad_clip"]),
-        "data.max_seq_len": int(run["max_seq_len"]),
+        "data.max_seq_len": max_seq_len,
         "ckpt.every": ckpt_every,
         "data.eval_slice": "eval-v1",
         "run.precision": str(run["precision"]),
@@ -333,11 +354,11 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
             ln = seq_len * (1.0 + cv * z)
             lens.append(max(4, int(round(ln))))
         tokens = int(round(sum(lens) * eff["token_mult"]))
-        tokens = min(tokens, int(run["max_seq_len"]) * batch * 8)
+        tokens = min(tokens, max_seq_len * batch * 8)
 
         # ---- 计算与开销
-        compute_ms = (float(run["base_compute_ms"]) + float(run["per_token_ms"]) * tokens) * eff["compute_mult"]
-        overhead_ms = float(run["overhead_ms"]) * eff["overhead_mult"]
+        compute_ms = (base_compute_ms + per_token_ms * tokens) * eff["compute_mult"]
+        overhead_ms = base_overhead_ms * eff["overhead_mult"]
 
         # ---- 状态转移（在一步之内发生）
         def go(frm: str, to: str, reason: str) -> None:
@@ -363,7 +384,7 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
         if recover_step:
             go("FAILED", "RECOVER", "recover_begin")
             go("RECOVER", "TRAINING", "resume_from_checkpoint")
-            recover_extra_ms = float(run["recover_ms"])
+            recover_extra_ms = recover_ms
 
         ckpt_extra_ms = 0.0
         eval_extra_ms = 0.0
@@ -373,12 +394,12 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
         if state == "TRAINING":
             if is_eval:
                 go("TRAINING", "EVALUATING", "eval_due")
-                eval_extra_ms = float(run["eval_ms"])
+                eval_extra_ms = eval_ms
                 eval_id = f"eval-{s:04d}"
                 go("EVALUATING", "TRAINING", "eval_done")
             if is_ckpt:
                 go("TRAINING", "CHECKPOINTING", "ckpt_due")
-                ckpt_extra_ms = float(run["ckpt_write_ms"]) * eff["ckpt_mult"]
+                ckpt_extra_ms = ckpt_write_ms * eff["ckpt_mult"]
                 ckpt_id = f"ckpt-{s:04d}"
                 go("CHECKPOINTING", "TRAINING", "ckpt_done")
 
@@ -393,11 +414,11 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
         t_end = t_true + step_time_s
 
         # ---- 信号值
-        loss_trend = float(run["loss0"]) * (float(run["loss_decay"]) ** s)
-        loss = loss_trend * eff["loss_mult"] * (1.0 + float(run["loss_noise"]) * rngs["metric"].normal(0.0, 1.0))
+        loss_trend = loss0 * (loss_decay ** s)
+        loss = loss_trend * eff["loss_mult"] * (1.0 + loss_noise * rngs["metric"].normal(0.0, 1.0))
         grad_norm = (
-            float(run["grad_norm_base"])
-            * math.exp(float(run["grad_norm_sigma"]) * rngs["metric"].normal(0.0, 1.0))
+            grad_base
+            * math.exp(grad_sigma * rngs["metric"].normal(0.0, 1.0))
             * eff["grad_mult"]
         )
         lr = base_lr * eff["lr_mult"]
@@ -409,15 +430,15 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
         cpu_util = min(99.0, 34.0 * eff["overhead_mult"] ** 0.6 + 1.5 * rngs["resource"].normal(0.0, 1.0))
         ram_bytes = (16.0e9 + tokens * 9000.0) * (1.0 + 0.004 * rngs["resource"].normal(0.0, 1.0))
         vram_bytes = (
-            float(run["params_m"]) * 1e6 * float(run["bytes_per_param"]) * (1.0 + float(run["vram_opt_mult"]))
-        ) * eff["vram_mult"] + tokens * float(run["bytes_per_token_activation"])
+            params_m * 1e6 * bytes_per_param * (1.0 + vram_opt_mult)
+        ) * eff["vram_mult"] + tokens * bytes_per_activation
         if ckpt_extra_ms > 0:
-            disk_mbps = float(run["disk_mbps_write"]) * eff["disk_mult"]
+            disk_mbps = disk_mbps_write * eff["disk_mult"]
         elif is_eval:
             disk_mbps = 60.0 * eff["disk_mult"]
         else:
             disk_mbps = 8.0 * eff["disk_mult"]
-        net_mbps = float(run["net_mbps_base"]) * (1.0 + 0.03 * rngs["resource"].normal(0.0, 1.0))
+        net_mbps = net_mbps_base * (1.0 + 0.03 * rngs["resource"].normal(0.0, 1.0))
         eval_loss = None
         if is_eval:
             eval_loss = (
@@ -482,7 +503,7 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
                 None,
                 {
                     "ckpt_id": ckpt_id,
-                    "bytes": float(run["params_m"]) * 1e6 * float(run["bytes_per_param"]),
+                    "bytes": params_m * 1e6 * bytes_per_param,
                     "duration_s": ckpt_extra_ms / 1000.0,
                 },
             )
