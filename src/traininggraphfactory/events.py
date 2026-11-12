@@ -307,6 +307,12 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
 
     # 每个来源一条独立随机流：多注入一个根因不会改变已有根因的抖动。
     rngs = {s.id: Rng(derive_seed(seed, s.id, "events")) for s in source_specs}
+    # 步循环里每步都要抽好几次。把四条流绑成局部名：随机流按来源互相独立，
+    # 取用顺序不影响任何一条流自己的抽样序列，产物逐位不变。
+    job_rng = rngs["job"]
+    metric_rng = rngs["metric"]
+    io_rng = rngs["io"]
+    resource_rng = rngs["resource"]
 
     traces: list[StepTrace] = []
     events: list[Event] = []
@@ -348,12 +354,17 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
         is_eval = is_eval_step(s, eval_every)
 
         # 每个来源的采样抖动：按 (来源, 步) 派生，于是加一个根因不会改变抖动。
-        jit = {sid: rngs[sid].normal(0.0, 0.004) for sid in rngs}
+        # metric / resource 的抖动在本步用不上，但**必须照抽**：少抽一次，
+        # 这两条流后面每次采样都会整体错位。
+        jit_job = job_rng.normal(0.0, 0.004)
+        _ = metric_rng.normal(0.0, 0.004)
+        _ = resource_rng.normal(0.0, 0.004)
+        jit_io = io_rng.normal(0.0, 0.004)
 
         # ---- 一批数据的长度（数据层的输入）
         lens = []
         for i in range(batch):
-            z = rngs["job"].normal(0.0, 1.0)
+            z = job_rng.normal(0.0, 1.0)
             ln = seq_len * (1.0 + cv * z)
             lens.append(max(4, int(round(ln))))
         tokens = int(round(sum(lens) * eff["token_mult"]))
@@ -416,10 +427,10 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
 
         # ---- 信号值
         loss_trend = loss0 * (loss_decay ** s)
-        loss = loss_trend * eff["loss_mult"] * (1.0 + loss_noise * rngs["metric"].normal(0.0, 1.0))
+        loss = loss_trend * eff["loss_mult"] * (1.0 + loss_noise * metric_rng.normal(0.0, 1.0))
         grad_norm = (
             grad_base
-            * math.exp(grad_sigma * rngs["metric"].normal(0.0, 1.0))
+            * math.exp(grad_sigma * metric_rng.normal(0.0, 1.0))
             * eff["grad_mult"]
         )
         lr = base_lr * eff["lr_mult"]
@@ -428,8 +439,8 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
 
         gpu0_util = 100.0 * compute_ms / step_time_ms
         gpu1_util = min(100.0, gpu0_util * 0.92 + 2.0)
-        cpu_util = min(99.0, 34.0 * eff["overhead_mult"] ** 0.6 + 1.5 * rngs["resource"].normal(0.0, 1.0))
-        ram_bytes = (16.0e9 + tokens * 9000.0) * (1.0 + 0.004 * rngs["resource"].normal(0.0, 1.0))
+        cpu_util = min(99.0, 34.0 * eff["overhead_mult"] ** 0.6 + 1.5 * resource_rng.normal(0.0, 1.0))
+        ram_bytes = (16.0e9 + tokens * 9000.0) * (1.0 + 0.004 * resource_rng.normal(0.0, 1.0))
         vram_bytes = (
             params_m * 1e6 * bytes_per_param * (1.0 + vram_opt_mult)
         ) * eff["vram_mult"] + tokens * bytes_per_activation
@@ -439,11 +450,11 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
             disk_mbps = 60.0 * eff["disk_mult"]
         else:
             disk_mbps = 8.0 * eff["disk_mult"]
-        net_mbps = net_mbps_base * (1.0 + 0.03 * rngs["resource"].normal(0.0, 1.0))
+        net_mbps = net_mbps_base * (1.0 + 0.03 * resource_rng.normal(0.0, 1.0))
         eval_loss = None
         if is_eval:
             eval_loss = (
-                loss_trend * 0.92 * eff["eval_mult"] * (1.0 + 0.02 * rngs["metric"].normal(0.0, 1.0))
+                loss_trend * 0.92 * eff["eval_mult"] * (1.0 + 0.02 * metric_rng.normal(0.0, 1.0))
             )
 
         traces.append(
@@ -475,14 +486,14 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
         )
 
         # ---- 事件：job
-        emit("job", "step_begin", t_begin + jit["job"], s, {"step": s, "lr": lr, "tokens": tokens})
+        emit("job", "step_begin", t_begin + jit_job, s, {"step": s, "lr": lr, "tokens": tokens})
         if is_eval:
-            emit("job", "eval_begin", t_begin + jit["job"], s, {"eval_id": eval_id, "step": s})
-            emit("job", "eval_end", t_end + jit["job"], s, {"eval_id": eval_id, "step": s})
+            emit("job", "eval_begin", t_begin + jit_job, s, {"eval_id": eval_id, "step": s})
+            emit("job", "eval_end", t_end + jit_job, s, {"eval_id": eval_id, "step": s})
         if is_ckpt:
-            emit("job", "ckpt_begin", t_begin + jit["job"], s, {"ckpt_id": ckpt_id, "step": s})
-            emit("job", "ckpt_end", t_end + jit["job"], s, {"ckpt_id": ckpt_id, "step": s})
-        emit("job", "step_end", t_end + jit["job"], s, {"step": s})
+            emit("job", "ckpt_begin", t_begin + jit_job, s, {"ckpt_id": ckpt_id, "step": s})
+            emit("job", "ckpt_end", t_end + jit_job, s, {"ckpt_id": ckpt_id, "step": s})
+        emit("job", "step_end", t_end + jit_job, s, {"step": s})
 
         # ---- 事件：io
         # **放在步中点，不放在步首。** 步首正好压在步边界上，而步边界本身带 ±8ms
@@ -492,7 +503,7 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
         emit(
             "io",
             "read_batch",
-            t_mid + jit["io"],
+            t_mid + jit_io,
             None,
             {"tokens": tokens, "duration_s": overhead_ms / 1000.0},
         )
@@ -500,7 +511,7 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
             emit(
                 "io",
                 "write_ckpt",
-                t_mid + jit["io"],
+                t_mid + jit_io,
                 None,
                 {
                     "ckpt_id": ckpt_id,
@@ -512,17 +523,17 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
             emit(
                 "io",
                 "read_ckpt",
-                t_mid + jit["io"],
+                t_mid + jit_io,
                 None,
                 {"ckpt_id": _checkpoint_at_or_before(s - 1, ckpt_every), "duration_s": recover_extra_ms / 1000.0},
             )
         if is_eval:
-            emit("io", "read_eval", t_mid + jit["io"], None, {"eval_id": eval_id, "duration_s": eval_extra_ms / 1000.0})
+            emit("io", "read_eval", t_mid + jit_io, None, {"eval_id": eval_id, "duration_s": eval_extra_ms / 1000.0})
 
         # ---- 配置变更（只在 lr 真的变了的那一步发）
         if abs(lr - prev_lr) > 1e-12:
             config_timeline.append((s, "train.lr", lr))
-            emit("job", "config_change", t_begin + jit["job"], s, {"key": "train.lr", "value": lr})
+            emit("job", "config_change", t_begin + jit_job, s, {"key": "train.lr", "value": lr})
             prev_lr = lr
 
         t_true = t_end
