@@ -260,9 +260,11 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
     # 事件流里每写一条事件都要查一次来源。`emit` 会被调用上千次，
     # 在这里做一次表，比每次 `next(...)` 扫一遍来源列表便宜得多。
     # 用 setdefault 而不是 dict 推导：与 `next` 一样取**第一个**同 id 的来源。
-    spec_by_id: dict[str, SourceSpec] = {}
+    # 表里直接放 `(偏移, 漂移, 是否带 step)` 三元组 —— `emit` 只用到这三个字段，
+    # 每写一条事件少三次属性查找。
+    clock_by_id: dict[str, tuple[float, float, bool]] = {}
     for _spec in source_specs:
-        spec_by_id.setdefault(_spec.id, _spec)
+        clock_by_id.setdefault(_spec.id, (_spec.clock_offset_s, _spec.drift_s_per_s, _spec.carries_step))
     beacon_every = int(cfg["beacon"]["every_steps"])
     beacon_jitter = float(cfg["beacon"]["jitter_s"])
     drop_prob = float(cfg["beacon"]["drop_prob"])
@@ -297,8 +299,8 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
         而 `align` 的线性拟合会给出一个系统性偏斜的斜率。
         """
         nonlocal ev_seq
-        spec = spec_by_id[source]
-        t_local = t_true + spec.clock_offset_s + spec.drift_s_per_s * t_true
+        offset, drift, carries_step = clock_by_id[source]
+        t_local = t_true + offset + drift * t_true
         ev_seq += 1
         events.append(
             Event(
@@ -306,7 +308,7 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
                 source=source,
                 kind=kind,
                 t_local=t_local,
-                step=(step if spec.carries_step else None),
+                step=(step if carries_step else None),
                 payload=payload,
             )
         )
