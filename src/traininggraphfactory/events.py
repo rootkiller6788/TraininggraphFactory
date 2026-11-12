@@ -255,6 +255,9 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
     seed = int(cfg["seed"])
 
     roots = root_causes_of(cfg)
+    # 恢复步 = nan_grad 注入后的下一步。折成集合，步循环里只做一次成员判断，
+    # 不必每步都把根因列表走一遍。
+    recover_steps = {int(r["at_step"]) + 1 for r in roots if str(r["kind"]) == "nan_grad"}
     model = causal_model_of(cfg)
     source_specs = tuple(SourceSpec.from_dict(s) for s in sources_of(cfg))
     # 事件流里每写一条事件都要查一次来源。`emit` 会被调用上千次，
@@ -377,9 +380,7 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
         # 恢复步：上一步 nan 了（进了 FAILED），这一步从最近的 checkpoint 续跑。
         # **必须真的从 FAILED 出发** —— 从 TRAINING 直接「恢复」是一条没声明过的边，
         # `state.py` 会拒绝它。这条链正是 §8「异常链路关联」的主干。
-        recover_step = any(
-            int(r["at_step"]) + 1 == s and str(r["kind"]) == "nan_grad" for r in roots
-        )
+        recover_step = s in recover_steps
         recover_extra_ms = 0.0
         if recover_step:
             go("FAILED", "RECOVER", "recover_begin")
