@@ -144,6 +144,23 @@ def _least_squares(xs: Sequence[float], ys: Sequence[float]) -> tuple[float, flo
 # --------------------------------------------------------------------------- #
 
 
+def _beacon_pairs(
+    ref_sync: Iterable[Event],
+    mine_sync: Iterable[Event],
+) -> list[tuple[float, float]]:
+    """信标配对的实体：两边各自的本来源信标**已经按事件流顺序**分好。"""
+    ref: dict[int, float] = {}
+    for e in ref_sync:
+        ref[int(e.payload["beacon"])] = e.t_local
+    out: list[tuple[float, float]] = []
+    for e in mine_sync:
+        b = int(e.payload["beacon"])
+        if b in ref:
+            out.append((e.t_local, ref[b]))
+    out.sort(key=lambda p: p[1])
+    return out
+
+
 def beacon_pairs(
     run: Any,
     source_id: str,
@@ -154,18 +171,17 @@ def beacon_pairs(
     配对靠的是信标的**全局序号**（payload 里的 `beacon`），不是时间戳。
     参考时钟按定义是 `job` 自己的本地时钟：它带 step 号，是唯一的锚。
     """
-    ref: dict[int, float] = {}
-    for e in run.events:
-        if e.kind == "sync" and e.source == reference_id:
-            ref[int(e.payload["beacon"])] = e.t_local
-    out: list[tuple[float, float]] = []
-    for e in run.events:
-        if e.kind == "sync" and e.source == source_id:
-            b = int(e.payload["beacon"])
-            if b in ref:
-                out.append((e.t_local, ref[b]))
-    out.sort(key=lambda p: p[1])
-    return out
+    ref_sync = [e for e in run.events if e.kind == "sync" and e.source == reference_id]
+    mine_sync = [e for e in run.events if e.kind == "sync" and e.source == source_id]
+    return _beacon_pairs(ref_sync, mine_sync)
+
+
+def _bounds_from(
+    begin: Mapping[int, float],
+    end: Mapping[int, float],
+) -> list[tuple[int, float, float]]:
+    steps = sorted(set(begin) & set(end))
+    return [(s, begin[s], end[s]) for s in steps]
 
 
 def step_boundaries(
@@ -186,8 +202,7 @@ def step_boundaries(
             begin[e.step] = e.t_local
         elif e.kind == "step_end":
             end[e.step] = e.t_local
-    steps = sorted(set(begin) & set(end))
-    return [(s, begin[s], end[s]) for s in steps]
+    return _bounds_from(begin, end)
 
 
 def assign_step(
@@ -262,7 +277,34 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
     max_err = float(acfg["max_step_assign_error"])
 
     specs = {s.id: s for s in run.sources}
-    bounds = step_boundaries(run)
+
+    # 一次遍历把后面要反复用的四样东西分好：
+    #   begin/end       —— 参考源的步边界（下面合成 `bounds`）；
+    #   sync_by_source  —— 每路来源的信标（信标配对要按来源取）；
+    #   pending         —— 待归属事件（保持事件流顺序，建表要用它）；
+    #   pending_by_source —— 同一批事件按来源分好（模型循环不再逐个筛）。
+    # 原来这四样分别由 `step_boundaries`、三次 `beacon_pairs`、一次列表推导
+    # 和每来源一次过滤得到，同一份 1500+ 条事件流要扫七八遍。
+    begin: dict[int, float] = {}
+    end: dict[int, float] = {}
+    sync_by_source: dict[str, list[Event]] = {}
+    pending: list[Event] = []
+    pending_by_source: dict[str, list[Event]] = {}
+    for e in run.events:
+        if e.kind == "sync":
+            sync_by_source.setdefault(e.source, []).append(e)
+            continue
+        if e.source == _REFERENCE_SOURCE:
+            if e.step is not None:
+                if e.kind == "step_begin":
+                    begin[e.step] = e.t_local
+                elif e.kind == "step_end":
+                    end[e.step] = e.t_local
+            continue
+        pending.append(e)
+        pending_by_source.setdefault(e.source, []).append(e)
+
+    bounds = _bounds_from(begin, end)
     if not bounds:
         raise AlignmentError("`job` 没有给出任何步边界 —— 没有锚，谈不上对齐。")
     starts = [b[1] for b in bounds]
@@ -279,9 +321,6 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
         if i < 0:
             return None
         return truth_steps[i]
-
-    # 待归属的事件：不带 step 号、又不是信标的那些
-    pending = [e for e in run.events if e.source != _REFERENCE_SOURCE and e.kind != "sync"]
 
     # 真值只用于**打分**，而且与「试哪种模型」无关。它在模型循环里被反复调用
     # （每种假设都会把每一条事件判一次），所以在这里一次算清 —— 否则三种假设
@@ -309,7 +348,7 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
             reports.append(
                 AlignmentReport(
                     source=sid,
-                    n_beacons=sum(1 for e in run.events if e.source == sid and e.kind == "sync"),
+                    n_beacons=len(sync_by_source.get(sid, ())),
                     model="identity",
                     injected_offset_s=sp.clock_offset_s,
                     estimated_offset_s=0.0,
@@ -321,7 +360,10 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
             candidates.append((sid, (AlignmentModel("identity", 0.0, 1.0, 0.0),)))
             continue
 
-        pairs = beacon_pairs(run, sid)
+        pairs = _beacon_pairs(
+            sync_by_source.get(_REFERENCE_SOURCE, ()),
+            sync_by_source.get(sid, ()),
+        )
         if len(pairs) < min_beacons:
             raise AlignmentError(
                 f"来源 {sid!r} 只配到 {len(pairs)} 个信标（要求 ≥ {min_beacons}）—— "
@@ -329,7 +371,7 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
             )
 
         fits = fit_models(pairs)
-        mine = [e for e in pending if e.source == sid]
+        mine = pending_by_source.get(sid, [])
 
         models: list[AlignmentModel] = []
         for name in allowed:
