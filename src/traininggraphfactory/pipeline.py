@@ -23,13 +23,13 @@ from typing import Any, Mapping, Sequence
 
 from .align import align
 from .config import expectations_of, protocol_digest, version_digest
-from .detect import detect
+from .detect import baseline_table, detect
 from .events import simulate
 from .jobdag import build_job_dag
 from .lineage import build_lineage, dumps as lineage_dumps
 from .recover import recover
 from .resource import build_resource_graph
-from .schema import utcnow
+from .schema import RESOURCES, RESOURCE_SIGNAL, utcnow
 from .state import build_state_graph
 from .verify import verify
 
@@ -163,9 +163,13 @@ def run_pipeline(cfg: Mapping[str, Any]) -> PipelineResult:
 
     job = build_job_dag(run)
     stg = build_state_graph(run)
-    rg = build_resource_graph(step_table, cfg)
 
-    det = detect(step_table, cfg)
+    # 资源图与检出读的是同一张分层基线表。按并集算一次再分给两边：信号各自
+    # 独立拟合，多算的三个资源信号不改变检出那些信号的数值，而少跑一遍
+    # Theil–Sen 是实打实的。
+    shared_baselines = baseline_table(step_table, cfg, [RESOURCE_SIGNAL[r] for r in RESOURCES])
+    rg = build_resource_graph(step_table, cfg, baselines=shared_baselines)
+    det = detect(step_table, cfg, baselines=shared_baselines)
     rec = recover(run, step_table, det, cfg, al)
     ver = verify(cfg, step_table, rec.attributions, base_run=run)
 

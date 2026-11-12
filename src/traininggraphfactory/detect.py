@@ -29,7 +29,7 @@ from .schema import (
 )
 from .stats import Baseline, step_kind, stratified_baselines
 
-__all__ = ["detect", "DetectResult", "z_table", "anomalies_of_signal"]
+__all__ = ["detect", "DetectResult", "baseline_table", "z_table", "anomalies_of_signal"]
 
 _FALLBACK_KIND = "all"
 
@@ -127,7 +127,41 @@ def z_table(
     return out
 
 
-def detect(step_table: Sequence[StepSignal], cfg: Mapping[str, Any]) -> DetectResult:
+def baseline_table(
+    step_table: Sequence[StepSignal],
+    cfg: Mapping[str, Any],
+    extra_signals: Sequence[str] = (),
+) -> dict[tuple[str, str], Baseline] | None:
+    """检出与资源图**共用**的那张分层基线表。
+
+    两处算的是同一张表：同一张步表、同一套阈值参数，资源信号只是检出信号
+    之外多三个。各算一遍不只是白花一次 Theil–Sen —— 两套基线一旦哪天口径
+    漂开，报告里的「异常」与「瓶颈」就会互相矛盾，而且没有任何东西能解释
+    这个矛盾。`extra_signals` 就是并集里多出来的那部分。
+    """
+    dcfg = cfg["detect"]
+    if not bool(dcfg["stratify_by_step_type"]):
+        # 消融模式下检出还要把表**过滤成只剩全量基线**，与资源图口径不同，
+        # 这里不替它做主，让两边各按各的算。
+        return None
+    signals = tuple(dict.fromkeys((*(str(s) for s in dcfg["monitored"]), *extra_signals)))
+    return stratified_baselines(
+        step_table,
+        signals,
+        float(dcfg["mad_floor_ratio"]),
+        min_stratum_size=int(dcfg["min_stratum_size"]),
+        fallback_kind=_FALLBACK_KIND,
+        detrend=bool(dcfg.get("detrend", True)),
+        span=float(dcfg.get("detrend_span", 4.0)),
+    )
+
+
+def detect(
+    step_table: Sequence[StepSignal],
+    cfg: Mapping[str, Any],
+    *,
+    baselines: Mapping[tuple[str, str], Baseline] | None = None,
+) -> DetectResult:
     dcfg = cfg["detect"]
     k = float(dcfg["k"])
     floor_ratio = float(dcfg["mad_floor_ratio"])
@@ -144,29 +178,30 @@ def detect(step_table: Sequence[StepSignal], cfg: Mapping[str, Any]) -> DetectRe
 
     # 分层模式下**不兜底**：分层样本不足的步如实不判定。
     allow_fallback = not stratify or fallback_mode == "all"
-    if stratify:
-        baselines = stratified_baselines(
-            step_table,
-            monitored,
-            floor_ratio,
-            min_stratum_size=min_size,
-            fallback_kind=_FALLBACK_KIND,
-            detrend=detrend,
-            span=span,
-        )
-    else:
-        # 消融开关：**不分层**。留着它是为了让「分层有必要吗」这个问题
-        # 能被实测回答，而不是靠信念。
-        baselines = stratified_baselines(
-            step_table,
-            monitored,
-            floor_ratio,
-            min_stratum_size=1,
-            fallback_kind=_FALLBACK_KIND,
-            detrend=detrend,
-            span=span,
-        )
-        baselines = {(sig, _FALLBACK_KIND): b for (sig, _kk), b in baselines.items() if _kk == _FALLBACK_KIND}
+    if baselines is None:
+        if stratify:
+            baselines = stratified_baselines(
+                step_table,
+                monitored,
+                floor_ratio,
+                min_stratum_size=min_size,
+                fallback_kind=_FALLBACK_KIND,
+                detrend=detrend,
+                span=span,
+            )
+        else:
+            # 消融开关：**不分层**。留着它是为了让「分层有必要吗」这个问题
+            # 能被实测回答，而不是靠信念。
+            baselines = stratified_baselines(
+                step_table,
+                monitored,
+                floor_ratio,
+                min_stratum_size=1,
+                fallback_kind=_FALLBACK_KIND,
+                detrend=detrend,
+                span=span,
+            )
+            baselines = {(sig, _FALLBACK_KIND): b for (sig, _kk), b in baselines.items() if _kk == _FALLBACK_KIND}
 
     # z 表与异常扫描合成一遍：原来先建整张 `(步, 信号) → z` 再逐格取回，
     # 同一份数值要走两次循环外加一次 dict 存取。合并后 z 仍然完整保留
@@ -226,7 +261,11 @@ def detect(step_table: Sequence[StepSignal], cfg: Mapping[str, Any]) -> DetectRe
             )
 
     anomalies.sort(key=lambda a: (a.step_lo, a.signal))
-    return DetectResult(tuple(anomalies), zs, dict(baselines), k, monitored, skipped)
+    # 共用的基线表可能比检出信号多（资源图多出三路）。产物里只留自己监控的
+    # 那些 —— `anomalies.json` 的基线清单是检出的解释，不该混进别人的信号。
+    monitored_set = set(monitored)
+    own = {key: b for key, b in baselines.items() if key[0] in monitored_set}
+    return DetectResult(tuple(anomalies), zs, own, k, monitored, skipped)
 
 
 def _episodes(

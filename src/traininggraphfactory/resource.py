@@ -61,10 +61,17 @@ def _baseline_for(
     return b
 
 
-def build_resource_graph(step_table: Sequence[StepSignal], cfg: Mapping[str, Any]) -> ResourceGraph:
+def build_resource_graph(
+    step_table: Sequence[StepSignal],
+    cfg: Mapping[str, Any],
+    *,
+    baselines: Mapping[tuple[str, str], Baseline] | None = None,
+) -> ResourceGraph:
     if not step_table:
         raise GraphError("逐步信号表是空的 —— 没有步，谈不上资源图。")
-    table = signal_baselines(step_table, cfg)
+    # 检出那边算过的同一张分层基线可以直接拿过来（见 `detect.baseline_table`）：
+    # 它按信号独立拟合，多出来的那些信号不影响这七路的数值。
+    table = signal_baselines(step_table, cfg) if baselines is None else baselines
     k = float(cfg["detect"]["k"])
 
     # 每个资源在每一步的「坏方向 z」。正数 = 该资源这一步比平时更受压。
