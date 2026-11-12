@@ -337,13 +337,17 @@ def write_outputs(result: PipelineResult, out_dir: Path | str) -> list[Path]:
     written.append(out / "verify.json")
 
     # --- 设计期望 vs 实测：**允许期望被推翻**。 ---
+    # 这张表 `report.md` 也要用。它里面有一条判据会**真的把分层关掉再检一遍**
+    # （`_unstratified_count`），重算一次就是多跑一遍检出 —— 所以只建一次，
+    # 两份产物共用。
     from .report import expectation_rows
 
+    rows = expectation_rows(result)
     _write_json(
         out / "expectations.json",
         {
             "declared": dict(expectations_of(result.cfg)),
-            "rows": expectation_rows(result),
+            "rows": rows,
         },
     )
     written.append(out / "expectations.json")
@@ -364,7 +368,7 @@ def write_outputs(result: PipelineResult, out_dir: Path | str) -> list[Path]:
 
     from .report import render_report
 
-    (out / "report.md").write_text(render_report(result), encoding="utf-8")
+    (out / "report.md").write_text(render_report(result, rows=rows), encoding="utf-8")
     written.append(out / "report.md")
     return written
 
