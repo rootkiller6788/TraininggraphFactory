@@ -393,7 +393,8 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
             # **胜出**的那一种假设要交给建表，没必要每种假设都建一个 id 字典。
             steps_i: list[int | None] = []
             append = steps_i.append
-            for k, e in enumerate(mine):
+            # `zip` 把「事件」与「真值步」并排推进，省掉 enumerate 的计数与下标取值。
+            for e, ts in zip(mine, truth_by_idx):
                 t_ref = (e.t_local - a) / b
                 i = bisect_right(starts, t_ref) - 1
                 if i < 0:
@@ -407,7 +408,6 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
                     continue
                 n_ok += 1
                 append(assigned)
-                ts = truth_by_idx[k]
                 if ts is not None and ts != assigned:
                     n_wrong += 1
             assigned_lists[name] = steps_i
