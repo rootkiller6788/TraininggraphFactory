@@ -505,7 +505,9 @@ def _build_step_table(
             if isinstance(v, float):
                 # NaN 要**留在表里**：它不是「没测到」，它是「测到了，值就是 nan」。
                 # 检出模块会显式判它，而不是靠容差比较 —— 拿 nan 去比大小永远是 False。
-                x = float("nan") if math.isnan(v) else float(v)
+                # `v != v` 是 NaN 的定义本身，省掉一次 `math.isnan` 调用；非 NaN
+                # 的 float 原值存下即可（`float(v)` 对 float 是恒等）。
+                x = float("nan") if v != v else v
             elif isinstance(v, int) and not isinstance(v, bool):
                 x = float(v)
             else:
