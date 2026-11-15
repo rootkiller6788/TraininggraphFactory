@@ -153,6 +153,15 @@ def _scale(base: float, sev: float) -> float:
     return 1.0 + (base - 1.0) * sev
 
 
+# 没有任何根因活跃时的「效果」：全是乘数 1、不 nan。它只被读、从不被改，
+# 120 步里约九成走这条路 —— 每步重造一个 13 键字典纯属浪费。调用方只读
+# `eff[...]`（`active` 还会被 `tuple()` 包一层），共享同一份是安全的。
+_NEUTRAL_EFFECTS: dict[str, Any] = {k: 1.0 for k in _EFFECT_KEYS}
+_NEUTRAL_EFFECTS["nan"] = False
+_NEUTRAL_EFFECTS["active"] = ()
+_NEUTRAL_EFFECTS["peak_label"] = {}
+
+
 def _effects(step: int, roots: tuple[Mapping[str, Any], ...]) -> dict[str, Any]:
     """第 `step` 步上，所有活跃根因叠出来的乘数。
 
@@ -160,16 +169,18 @@ def _effects(step: int, roots: tuple[Mapping[str, Any], ...]) -> dict[str, Any]:
     梯度先炸、loss 后炸，这个**先后**正是因果链能被还原的原因。如果两者同时炸，
     「谁先动」这条唯一的因果线索就没有了。
     """
-    out: dict[str, Any] = {k: 1.0 for k in _EFFECT_KEYS}
-    out["nan"] = False
-    out["active"] = []
-    out["peak_label"] = {}
+    out: dict[str, Any] | None = None
 
     for r in roots:
         at = int(r["at_step"])
         dur = int(r["duration_steps"])
         if not (at <= step < at + dur):
             continue
+        if out is None:
+            out = {k: 1.0 for k in _EFFECT_KEYS}
+            out["nan"] = False
+            out["active"] = []
+            out["peak_label"] = {}
         mag = float(r["magnitude"])
         rel = step - at
         out["active"].append(str(r["id"]))
@@ -235,7 +246,7 @@ def _effects(step: int, roots: tuple[Mapping[str, Any], ...]) -> dict[str, Any]:
             # `gpu_util_z_drop` 不在这里 —— 它出现在**下一步的恢复**里
             # （重载 checkpoint 的 1.4s 里 GPU 是空的），见 `_evidence_steps`。
 
-    return out
+    return out if out is not None else _NEUTRAL_EFFECTS
 
 
 # --------------------------------------------------------------------------- #
