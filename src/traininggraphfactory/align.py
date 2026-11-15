@@ -71,8 +71,8 @@ ALIGNED_SIGNALS: tuple[tuple[str, str, str, str], ...] = (
     ("io", "write_ckpt", "duration_s", "ckpt_write_s"),
 )
 
-# 这几个来自 `job` 自己的事件，**不需要对齐**（它们本来就带 step 号）。
-JOB_SIGNALS: tuple[str, ...] = ("step_time_s", "throughput", "lr")
+# `step_time_s` / `lr` 来自 `job` 自己的事件（**不需要对齐**，它们本来就带
+# step 号）；`throughput` 由 `batch_tokens / step_time_s` 在建表时派生。
 
 
 def _aligned_index() -> dict[tuple[str, str], tuple[tuple[str, str], ...]]:
@@ -287,6 +287,7 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
     # 和每来源一次过滤得到，同一份 1500+ 条事件流要扫七八遍。
     begin: dict[int, float] = {}
     end: dict[int, float] = {}
+    lr_by_step: dict[int, float] = {}
     sync_by_source: dict[str, list[Event]] = {}
     pending: list[Event] = []
     pending_by_source: dict[str, list[Event]] = {}
@@ -298,6 +299,9 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
             if e.step is not None:
                 if e.kind == "step_begin":
                     begin[e.step] = e.t_local
+                    # `job` 自带 lr。建表时要用，这一趟本来就在扫全部事件，
+                    # 顺手收下 —— 建表时再走一遍事件流纯属重复。
+                    lr_by_step[e.step] = float(e.payload["lr"])
                 elif e.kind == "step_end":
                     end[e.step] = e.t_local
             continue
@@ -470,7 +474,7 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
     winner_steps = {
         sid: assigned_by_model[(sid, name)] for sid, name in chosen.items() if sid != _REFERENCE_SOURCE
     }
-    table, n_assigned = _build_step_table(run, step_ids, bounds, winner_steps, pending)
+    table, n_assigned = _build_step_table(step_ids, bounds, winner_steps, pending, lr_by_step)
     return AlignmentResult(
         reports=tuple(reports),
         candidates=tuple(candidates),
@@ -483,11 +487,11 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
 
 
 def _build_step_table(
-    run: Any,
     step_ids: Sequence[int],
     bounds: Sequence[tuple[int, float, float]],
     steps_by_source: Mapping[str, Mapping[int, int]],
     pending: Iterable[Event],
+    lr_by_step: Mapping[int, float],
 ) -> tuple[tuple[StepSignal, ...], int]:
     """逐步信号表：**对齐之后的公共输入**，三张图与检出都读它。
 
@@ -537,18 +541,6 @@ def _build_step_table(
             src_counts = contrib[st]
             src_counts[src] = src_counts.get(src, 0) + n_vals
 
-    # `job` 自带的三个信号：不需要对齐，直接从带 step 号的事件里读
-    job_vals: dict[int, dict[str, float]] = {s: {} for s in step_ids}
-    for e in run.events:
-        if e.source != _REFERENCE_SOURCE or e.step is None or e.step not in job_vals:
-            continue
-        if e.kind == "step_begin":
-            job_vals[e.step]["lr"] = float(e.payload["lr"])
-        elif e.kind == "step_end":
-            pass
-    for step, b0, b1 in bounds:
-        job_vals[step]["step_time_s"] = b1 - b0
-
     table: list[StepSignal] = []
     for step, b0, b1 in bounds:
         values: dict[str, float | None] = dict.fromkeys(SIGNALS)
@@ -563,9 +555,12 @@ def _build_step_table(
             total = sum(vs)
             values[sig] = float("nan") if math.isnan(total) else total / len(vs)
             n_samples += len(vs)
-        for sig in JOB_SIGNALS:
-            if sig in job_vals[step]:
-                values[sig] = job_vals[step][sig]
+        # `job` 自带的信号：步耗时就是步边界之差；lr 由 `align` 的索引遍历
+        # 顺路收好（那次本来就要扫全部事件），这里不必再走一遍事件流。
+        values["step_time_s"] = b1 - b0
+        lr = lr_by_step.get(step)
+        if lr is not None:
+            values["lr"] = lr
         tokens = values.get("batch_tokens")
         st_s = values.get("step_time_s")
         values["throughput"] = (tokens / st_s) if (tokens is not None and st_s) else None
