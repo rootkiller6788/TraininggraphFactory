@@ -372,31 +372,41 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
 
         fits = fit_models(pairs)
         mine = pending_by_source.get(sid, [])
+        # 真值步号只与事件有关，与试哪种模型无关：原来在模型循环里每种假设
+        # 都查一遍（每条事件还各调两次 `id`）。这里按事件位置一次算好，
+        # 模型循环里只做一次列表取值。
+        truth_by_idx = [truth_step_by_event.get(id(e)) for e in mine]
 
         models: list[AlignmentModel] = []
+        assigned_lists: dict[str, list[int | None]] = {}
         for name in allowed:
             a, b = fits[name]
             resid = _residuals(pairs, a, b)
             n_ok = 0
             n_bad = 0
             n_wrong = 0
-            assigned_ids: dict[int, int] = {}
-            for e in mine:
+            # 先按事件位置收「判出的步」（判不出记 None）。归属结果只有
+            # **胜出**的那一种假设要交给建表，没必要每种假设都建一个 id 字典。
+            steps_i: list[int | None] = []
+            append = steps_i.append
+            for k, e in enumerate(mine):
                 t_ref = (e.t_local - a) / b
                 i = bisect_right(starts, t_ref) - 1
                 if i < 0:
+                    append(None)
                     n_bad += 1
                     continue
                 assigned, b0, b1 = bounds[i]
                 if t_ref < b0 or t_ref >= b1:
+                    append(None)
                     n_bad += 1
                     continue
                 n_ok += 1
-                assigned_ids[id(e)] = assigned
-                ts = truth_step_by_event.get(id(e))
+                append(assigned)
+                ts = truth_by_idx[k]
                 if ts is not None and ts != assigned:
                     n_wrong += 1
-            assigned_by_model[(sid, name)] = assigned_ids
+            assigned_lists[name] = steps_i
             models.append(
                 AlignmentModel(
                     model=name,
@@ -435,6 +445,11 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
             )
 
         chosen[sid] = win.model
+        # 胜出的假设才需要 `id(event) → 步` 的映射，落选的那些归属结果
+        # 只用于打分，不必为每条事件建一个键。
+        assigned_by_model[(sid, win.model)] = {
+            id(e): st for e, st in zip(mine, assigned_lists[win.model]) if st is not None
+        }
         candidates.append((sid, tuple(models)))
         reports.append(
             AlignmentReport(
