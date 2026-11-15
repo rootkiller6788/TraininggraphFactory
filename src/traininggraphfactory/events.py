@@ -348,14 +348,17 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
         offset, drift, carries_step = clock_by_id[source]
         t_local = t_true + offset + drift * t_true
         ev_seq += 1
+        # 逐字段位置传参 + `zfill` 拼 id：一次模拟要写上千条事件，关键字传参
+        # 与 f-string 的格式化工夫都落在最热的循环里，而字段顺序本来就是
+        # 类型的契约。拼出的 id 与 f-string 逐字符相同。
         events.append(
             Event(
-                id=f"e{ev_seq:06d}",
-                source=source,
-                kind=kind,
-                t_local=t_local,
-                step=(step if carries_step else None),
-                payload=payload,
+                "e" + str(ev_seq).zfill(6),
+                source,
+                kind,
+                t_local,
+                step if carries_step else None,
+                payload,
             )
         )
 
@@ -630,12 +633,12 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
             ev_seq += 1
             events.append(
                 Event(
-                    id=f"e{ev_seq:06d}",
-                    source=spec.id,
-                    kind="sync",
-                    t_local=t_local,
-                    step=(s if spec.carries_step else None),
-                    payload={"beacon": b_idx},
+                    "e" + str(ev_seq).zfill(6),
+                    spec.id,
+                    "sync",
+                    t_local,
+                    s if spec.carries_step else None,
+                    {"beacon": b_idx},
                 )
             )
         b_idx += 1
