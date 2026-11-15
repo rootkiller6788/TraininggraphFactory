@@ -564,14 +564,15 @@ def _build_step_table(
         tokens = values.get("batch_tokens")
         st_s = values.get("step_time_s")
         values["throughput"] = (tokens / st_s) if (tokens is not None and st_s) else None
+        # 位置传参：每步一条，字段顺序就是 `StepSignal` 的契约。
         table.append(
             StepSignal(
-                step=step,
-                t_ref_begin=b0,
-                values=values,
-                n_samples=n_samples,
-                n_sources=len(contrib[step]),
-                assigned_from=dict(sorted(contrib[step].items())),
+                step,
+                b0,
+                values,
+                n_samples,
+                len(contrib[step]),
+                dict(sorted(contrib[step].items())),
             )
         )
     return tuple(table), n_assigned

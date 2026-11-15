@@ -476,31 +476,33 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
                 loss_trend * 0.92 * eff["eval_mult"] * (1.0 + 0.02 * metric_rng.normal(0.0, 1.0))
             )
 
+        # 位置传参（字段顺序即类型契约）：每步一条，关键字的字段名匹配
+        # 在这一处没有信息量。字段含义见 `schema.StepTrace`。
         traces.append(
             StepTrace(
-                step=s,
-                t_true_begin=t_begin,
-                t_true_end=t_end,
-                tokens=tokens,
-                compute_ms=compute_ms,
-                overhead_ms=overhead_ms,
-                loss=loss,
-                grad_norm=grad_norm,
-                lr=lr,
-                gpu0_util=gpu0_util,
-                gpu1_util=gpu1_util,
-                cpu_util=cpu_util,
-                ram_bytes=ram_bytes,
-                vram_bytes=vram_bytes,
-                disk_mbps=disk_mbps,
-                net_mbps=net_mbps,
-                is_ckpt=is_ckpt,
-                is_eval=is_eval,
-                ckpt_id=ckpt_id,
-                eval_id=eval_id,
-                eval_loss=eval_loss,
-                nan=nan,
-                root_causes=tuple(eff["active"]),
+                s,
+                t_begin,
+                t_end,
+                tokens,
+                compute_ms,
+                overhead_ms,
+                loss,
+                grad_norm,
+                lr,
+                gpu0_util,
+                gpu1_util,
+                cpu_util,
+                ram_bytes,
+                vram_bytes,
+                disk_mbps,
+                net_mbps,
+                is_ckpt,
+                is_eval,
+                ckpt_id,
+                eval_id,
+                eval_loss,
+                nan,
+                tuple(eff["active"]),
             )
         )
 
