@@ -209,14 +209,23 @@ def detect(
     zs: dict[tuple[int, str], float] = {}
     skipped: dict[str, int] = {sig: 0 for sig in monitored}
     raw: dict[str, list[tuple[int, float, float, bool]]] = {sig: [] for sig in monitored}
+    # 基线解析只与 (信号, 步类型) 有关，与步号无关：同一步类型的 120 步里
+    # 原来每一步都把整张监控信号表重新查一遍。这里每种步类型解析一次。
+    resolved: dict[str, dict[str, Baseline | None]] = {}
     for ss in step_table:
         kind = step_kind(ss)
+        per_kind = resolved.get(kind)
+        if per_kind is None:
+            per_kind = resolved[kind] = {
+                sig: _lookup(baselines, sig, kind, allow_fallback=allow_fallback) for sig in monitored
+            }
+        vals = ss.values
         for sig in monitored:
-            v = ss.get(sig)
+            v = vals.get(sig)
             if v is None:
                 continue
             is_nan = isinstance(v, float) and math.isnan(v)
-            b = _lookup(baselines, sig, kind, allow_fallback=allow_fallback)
+            b = per_kind[sig]
             if b is None:
                 # 没有基线 = **不判定**，不是「正常」。这两件事必须分开报，
                 # 否则「未判定」会被读成「没问题」。
