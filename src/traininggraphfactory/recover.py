@@ -214,15 +214,19 @@ def resolve_steps(run: Any, al: Any | None) -> dict[str, int]:
         return {e.id: e.step for e in run.events if e.step is not None}
     bounds = al.step_boundaries
     starts = [b[1] for b in bounds]
+    # 每个来源的胜出模型只查一次：`al.model` 要在候选表里线性找两级，
+    # 而事件有上千条、来源只有几个。
+    models: dict[str, Any] = {}
+    for sid, name in al.chosen_model.items():
+        m = al.model(sid, name)
+        if m is not None:
+            models[sid] = m
     out: dict[str, int] = {}
     for e in run.events:
         if e.step is not None:
             out[e.id] = e.step
             continue
-        name = al.chosen_model.get(e.source)
-        if name is None:
-            continue
-        m = al.model(e.source, name)
+        m = models.get(e.source)
         if m is None:
             continue
         st = assign_step((e.t_local - m.a) / m.b, starts, bounds)
