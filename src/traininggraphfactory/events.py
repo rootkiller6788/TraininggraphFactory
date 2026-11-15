@@ -30,6 +30,7 @@ from __future__ import annotations
 import bisect
 import json
 import math
+from operator import attrgetter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -57,6 +58,10 @@ __all__ = [
     "dump_events",
     "load_events",
 ]
+
+# 事件按 (本地时间, id) 排序。`attrgetter` 在 C 里一次取出元组，比每次都
+# 走 Python lambda 再建元组便宜；比较语义完全相同（同键、同顺序）。
+_EVENT_SORT_KEY = attrgetter("t_local", "id")
 
 # 声明的状态机转移图。**状态图里只有这些边** —— 出现别的转移就是事件流坏了，
 # `state.py` 会拒绝它，而不是把图悄悄补一条边。
@@ -642,7 +647,7 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
     # ---- 真值因果链
     truths = _build_truths(roots, model, traces, config_timeline, transitions, ckpt_every)
 
-    events.sort(key=lambda e: (e.t_local, e.id))
+    events.sort(key=_EVENT_SORT_KEY)
     return SimRun(
         sources=source_specs,
         traces=tuple(traces),
