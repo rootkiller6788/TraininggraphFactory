@@ -570,7 +570,11 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
 
     # ---- 事件：metric / resource 采样（按各自时钟的固定频率）
     # 采样点有几百个，而 traces 的起点按时间单调；把起点表建一次，归属就退化成二分。
+    # 二分就地展开：`_trace_at` 每次调用都只是「二分 + 两个区间检查」，而它在这
+    # 个循环里被调几百次，函数调用的开销与二分本身同量级。判定语义逐字不变。
     trace_starts = [tr.t_true_begin for tr in traces]
+    n_traces = len(traces)
+    bisect_right = bisect.bisect_right
     for spec in source_specs:
         if spec.sample_hz is None:
             continue
@@ -583,8 +587,12 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
             t_sample = (t_local - spec.clock_offset_s) / (1.0 + spec.drift_s_per_s)
             if t_sample < 0.0 or t_sample > t_true:
                 continue
-            tr = _trace_at(traces, trace_starts, t_sample)
-            if tr is None:
+            i = bisect_right(trace_starts, t_sample) - 1
+            if i < 0:
+                continue
+            tr = traces[i]
+            # 最后一步之后的时间仍归最后一步；第一步之前没有归属。
+            if not (t_sample < tr.t_true_end or i == n_traces - 1):
                 continue
             if spec.kind == "metric":
                 payload = {
@@ -662,24 +670,6 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
         config_timeline=tuple(config_timeline),
         beacons=tuple(beacons),
     )
-
-
-def _trace_at(traces: list[StepTrace], starts: list[float], t: float) -> StepTrace | None:
-    """真时间 → 所属的步。步长可变（这正是异常造成的），所以必须**按实际边界查**，
-    不能拿「平均步长」去除。
-
-    `starts` 是 `traces` 的起点表（调用方建一次）。步起点按时间单调，于是这里
-    用二分而不是线性扫描 —— 采样点有几百个，线性扫 120 步会让这一步变成
-    `simulate` 里最费时的循环之一。语义与「逐条找包含区间」完全一致：
-    最后一步之后的时间仍归最后一步，第一步之前的时间没有归属。
-    """
-    i = bisect.bisect_right(starts, t) - 1
-    if i < 0:
-        return None
-    tr = traces[i]
-    if t < tr.t_true_end or i == len(traces) - 1:
-        return tr
-    return None
 
 
 def _checkpoint_at_or_before(step: int, ckpt_every: int) -> str:
