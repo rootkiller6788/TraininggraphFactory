@@ -343,7 +343,7 @@ def evidence_hop(
 # --------------------------------------------------------------------------- #
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SourceSpec:
     """一个事件来源。**它的时钟偏移是注入的已知量，也是要被测回来的量。**
 
@@ -384,7 +384,7 @@ class SourceSpec:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Event:
     """一条事件。`t_local` 是**产生它的那个来源的本地时钟**，不是真时间。
 
@@ -427,7 +427,7 @@ class Event:
 # --------------------------------------------------------------------------- #
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StepTrace:
     """模拟器在**真时钟**上看到的第 s 步。这是「事件流的上游」。
 
@@ -530,7 +530,7 @@ class StepTrace:
 # --------------------------------------------------------------------------- #
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StepSignal:
     """**对齐之后**的逐步信号。这是三张图与检出的公共输入。
 
