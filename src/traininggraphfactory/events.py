@@ -369,8 +369,10 @@ def simulate(cfg: Mapping[str, Any]) -> SimRun:
 
     for s in range(steps):
         eff = _effects(s, roots)
-        is_ckpt = is_ckpt_step(s, ckpt_every)
-        is_eval = is_eval_step(s, eval_every)
+        # 与 `is_ckpt_step` / `is_eval_step` 逐字等价，就地判定：每步都要问
+        # 两次，函数调用开销与一次取模同量级，而这两个函数在别处还要用。
+        is_ckpt = s > 0 and s % ckpt_every == 0
+        is_eval = s > 0 and s % eval_every == 0
 
         # 每个来源的采样抖动：按 (来源, 步) 派生，于是加一个根因不会改变抖动。
         # metric / resource 的抖动在本步用不上，但**必须照抽**：少抽一次，
