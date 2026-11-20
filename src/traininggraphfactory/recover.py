@@ -257,8 +257,7 @@ def recover(
     sigs = signatures_of(cfg)
     ev = EvidenceIndex(run, det, resolve_steps(run, al))
 
-    cfg_timeline = _config_timeline(run)
-    ckpt_timeline = _ckpt_timeline(run)
+    cfg_timeline, ckpt_timeline = _timelines(run)
 
     all_cands: list[tuple[str, tuple[Candidate, ...]]] = []
     best: dict[str, Candidate] = {}
@@ -388,22 +387,31 @@ def _is_ambiguous(all_cands: Sequence[tuple[str, tuple[Candidate, ...]]], aid: s
     return False
 
 
-def _config_timeline(run: Any) -> list[tuple[int, str, Any]]:
-    """配置时间线：**从事件流读出来**，不是从 `cfg` 抄。
+def _timelines(run: Any) -> tuple[list[tuple[int, str, Any]], list[tuple[int, str]]]:
+    """两条时间线——配置与 checkpoint——在**同一趟事件遍历**里建好。
 
-    `run_begin` 带上初始配置，之后每条 `config_change` 追加一条。于是「第 43 步
-    当时用的是哪份配置」是个能被回答的问题 —— 而不是"去翻配置文件"。
+    两者都只从 `job` 事件里读，原来各扫一遍整条事件流（每次复原要扫两遍）。
+    配置时间线：`run_begin` 带上初始配置，之后每条 `config_change` 追加一条，
+    于是「第 43 步当时用的是哪份配置」是个能被回答的问题。
+    checkpoint 时间线：每一步真的写完哪个 checkpoint —— 从事件读，不拿
+    `ckpt_every` 做除法，因为周期可能被改过而事件是事实。
     """
-    out: list[tuple[int, str, Any]] = []
+    cfg_out: list[tuple[int, str, Any]] = []
+    ckpt_out: list[tuple[int, str]] = []
     for e in run.events:
         if e.source != "job":
             continue
-        if e.kind == "run_begin":
+        kind = e.kind
+        if kind == "run_begin":
             for k, v in sorted((e.payload.get("config") or {}).items()):
-                out.append((int(e.step or 0), str(k), v))
-        elif e.kind == "config_change":
-            out.append((int(e.step or 0), str(e.payload["key"]), e.payload["value"]))
-    return sorted(out, key=lambda t: (t[0], t[1]))
+                cfg_out.append((int(e.step or 0), str(k), v))
+        elif kind == "config_change":
+            cfg_out.append((int(e.step or 0), str(e.payload["key"]), e.payload["value"]))
+        elif kind == "ckpt_end" and e.step is not None:
+            cid = str(e.payload.get("ckpt_id", ""))
+            if cid:
+                ckpt_out.append((int(e.step), cid))
+    return sorted(cfg_out, key=lambda t: (t[0], t[1])), sorted(ckpt_out)
 
 
 def _config_value_at(timeline: Sequence[tuple[int, str, Any]], key: str, step: int) -> Any:
@@ -412,18 +420,6 @@ def _config_value_at(timeline: Sequence[tuple[int, str, Any]], key: str, step: i
         if k == key and st <= step:
             val = v
     return val
-
-
-def _ckpt_timeline(run: Any) -> list[tuple[int, str]]:
-    """每个 checkpoint 是在哪一步写完的。**从事件读，不拿 `ckpt_every` 做除法** ——
-    周期可能被改过，而「这一步真的写了 ckpt-0072」是事实。"""
-    out: list[tuple[int, str]] = []
-    for e in run.events:
-        if e.source == "job" and e.kind == "ckpt_end" and e.step is not None:
-            cid = str(e.payload.get("ckpt_id", ""))
-            if cid:
-                out.append((int(e.step), cid))
-    return sorted(out)
 
 
 def _checkpoint_before(timeline: Sequence[tuple[int, str]], step: int) -> str:
