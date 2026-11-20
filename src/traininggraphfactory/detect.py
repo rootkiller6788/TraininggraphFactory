@@ -191,17 +191,17 @@ def detect(
             )
         else:
             # 消融开关：**不分层**。留着它是为了让「分层有必要吗」这个问题
-            # 能被实测回答，而不是靠信念。
+            # 能被实测回答，而不是靠信念。这条路径只读全量基线，分层那几档
+            # 算出来会被整体丢掉 —— 直接不拟合。
             baselines = stratified_baselines(
                 step_table,
                 monitored,
                 floor_ratio,
-                min_stratum_size=1,
                 fallback_kind=_FALLBACK_KIND,
                 detrend=detrend,
                 span=span,
+                include_strata=False,
             )
-            baselines = {(sig, _FALLBACK_KIND): b for (sig, _kk), b in baselines.items() if _kk == _FALLBACK_KIND}
 
     # z 表与异常扫描合成一遍：原来先建整张 `(步, 信号) → z` 再逐格取回，
     # 同一份数值要走两次循环外加一次 dict 存取。合并后 z 仍然完整保留

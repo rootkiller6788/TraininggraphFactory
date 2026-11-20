@@ -280,13 +280,17 @@ def stratified_baselines(
     fallback_kind: str = "all",
     detrend: bool = True,
     span: float = DETREND_SPAN,
+    include_strata: bool = True,
 ) -> dict[tuple[str, str], Baseline]:
     """`(信号, 步类型) → 基线`。
 
     样本太少的层（本项目里 ckpt 层只有 9 步）退到 `fallback_kind` 的全量基线上 ——
     拿 3 个点去估 MAD 得到的不是一个尺度，是一个巧合。
+
+    `include_strata=False` 时只拟合全量那一档。不分层的消融只需要它，
+    分层那几档算出来也没有人读 —— 拟合是 O(n²)，白算一次都不划算。
     """
-    groups = strata(step_table)
+    groups = strata(step_table) if include_strata else {}
     out: dict[tuple[str, str], Baseline] = {}
     for sig in signals:
         # 直接读 `values`（`get` 只是转发）：每个信号要把全表与各分层再过一遍，
