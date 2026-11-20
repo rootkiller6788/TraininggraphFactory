@@ -31,7 +31,6 @@ from .config import causal_model_of, signatures_of
 from .detect import detect
 from .events import simulate
 from .recover import group_key, recover
-from .rng import canonical_json
 from .schema import (
     ROOT_CAUSE_KINDS,
     AlignmentAblation,
@@ -79,31 +78,9 @@ def _run_with(cfg: Mapping[str, Any], roots: Sequence[Mapping[str, Any]]) -> Any
     return simulate(c)
 
 
-def _scaled(root: Mapping[str, Any], f: float) -> dict[str, Any]:
-    """`magnitude` 从 1（无效果）线性拉到原值。
-
-    线性拉的是**偏离 1 的那部分**，不是乘数本身：`lr_spike` 的 mag=8 意思是
-    「学习率 ×8」，f=0.5 应该得到 ×4.5（一半的偏离），不是 ×4。
-    """
-    r = dict(root)
-    mag0 = float(r.get("magnitude", 1.0))
-    r["magnitude"] = 1.0 + f * (mag0 - 1.0)
-    return r
-
-
 def _table(cfg: Mapping[str, Any], roots: Sequence[Mapping[str, Any]]) -> tuple[Any, tuple[StepSignal, ...]]:
     run = _run_with(cfg, roots)
     return run, align(run, cfg).step_table
-
-
-def _roots_key(roots: Sequence[Mapping[str, Any]]) -> str:
-    """一组根因的规范键：**全部字段**都要进键，列表顺序也保留。
-
-    只看 `magnitude` 或只看 `f` 都不够：`nan_grad` 的幅度本来就是 1，
-    它的整条标定曲线是同一个配置；而两个不同的根因碰巧幅度相同，却是
-    两次不同的运行。规范序列化顺带把字典键序固定住。
-    """
-    return canonical_json(list(roots))
 
 
 def _value(table: Sequence[StepSignal], step: int, signal: str) -> float | None:
@@ -340,33 +317,36 @@ def verify(
         # 基线取**幅度压到 1（等价于没有效果）**的那一次运行，不是原运行 ——
         # 拿原运行当基线的话，曲线会从「满效果」走到 0，方向是反的，
         # 而我们要回答的是「幅度小到什么程度就不再是原因」。
-        zero_roots = [(_scaled(r, 0.0) if str(r["id"]) == rid else dict(r)) for r in roots]
-        # 同一份根因配置只模拟一次。这张表能接住三类重复：
-        # f=1 就是原配置、f=0 就是 t_zero、以及幅度本来就是 1 的根因
-        # （nan_grad）整条曲线退化成同一个配置。键取完整字段而不是 f ——
-        # 「幅度恰好等于原值」与「f 恰好等于 1」不是同一件事，不能混。
-        table_memo: dict[str, tuple[StepSignal, ...]] = {_roots_key(roots): base_table}
-        zero_key = _roots_key(zero_roots)
-        t_zero = table_memo.get(zero_key)
+        #
+        # 整条扫描只改**目标根因**的 `magnitude` 一个字段，其他根因原样不动。
+        # 所以只留一份可变的根因表，每档改一下幅度再跑；记忆键就是那个幅度值
+        # —— 其余字段都相同、只有这一处幅度可能不同，幅度唯一确定这份配置。
+        # 原来每档都重建整份列表、再把六个字典序列化成键，纯属为查表付费。
+        mag0 = float(match.get("magnitude", 1.0))
+        sweep_roots = [dict(r) for r in roots]
+        target = next(r for r in sweep_roots if str(r["id"]) == rid)
+        table_memo: dict[float, tuple[StepSignal, ...]] = {mag0: base_table}
+        if kind not in _SWITCH_KINDS and mag0 != 1.0:
+            # 幅度压到 1 的乘性根因在事件流上与「根本没有这个注入」**逐位
+            # 相同**：每个乘数乘 1.0，随机流也不认识根因表；对齐只读事件
+            # （真时钟）与 traces，二者同样不受影响。所以 P 探针那次
+            # `without` 运行可以直接当 α 曲线的零点，每根因少跑一次
+            # 模拟 + 对齐。开关式根因不适用（见 `_SWITCH_KINDS`）。
+            table_memo[1.0] = t_without
+        t_zero = table_memo.get(1.0)
         if t_zero is None:
-            if kind not in _SWITCH_KINDS:
-                # 幅度压到 1 的乘性根因在事件流上与「根本没有这个注入」**逐位
-                # 相同**：每个乘数乘 1.0，随机流也不认识根因表；对齐只读事件
-                # （真时钟）与 traces，二者同样不受影响。所以 P 探针那次
-                # `without` 运行可以直接当 α 曲线的零点，每根因少跑一次
-                # 模拟 + 对齐。开关式根因不适用（见 `_SWITCH_KINDS`）。
-                t_zero = t_without
-            else:
-                _, t_zero = _table(cfg, zero_roots)
-            table_memo[zero_key] = t_zero
+            target["magnitude"] = 1.0
+            _, t_zero = _table(cfg, sweep_roots)
+            table_memo[1.0] = t_zero
         points: list[tuple[float, float]] = []
         for f in F_SWEEP:
-            scaled = [_scaled(r, f) if str(r["id"]) == rid else dict(r) for r in roots]
-            memo_key = _roots_key(scaled)
-            t_f = table_memo.get(memo_key)
+            # 线性拉的是**偏离 1 的那部分**，不是乘数本身：`lr_spike` 的 mag=8
+            # 意思是「学习率 ×8」，f=0.5 应该得到 ×4.5（一半的偏离），不是 ×4。
+            target["magnitude"] = 1.0 + f * (mag0 - 1.0)
+            t_f = table_memo.get(target["magnitude"])
             if t_f is None:
-                _, t_f = _table(cfg, scaled)
-                table_memo[memo_key] = t_f
+                _, t_f = _table(cfg, sweep_roots)
+                table_memo[target["magnitude"]] = t_f
             d = _delta(t_zero, t_f, signal, step, log_space)
             if math.isinf(d):
                 ratio = float("inf")
