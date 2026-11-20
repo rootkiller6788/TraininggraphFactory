@@ -90,6 +90,14 @@ def _aligned_index() -> dict[tuple[str, str], tuple[tuple[str, str], ...]]:
 
 _ALIGNED_BY_EVENT = _aligned_index()
 
+# 同一张索引再按来源拆一层：`来源 → {事件类型: 信号表}`。逐事件热路径上
+# 原来每条事件都要现拼一个 `(source, kind)` 元组去查表；拆层之后是先按
+# 来源取子表（四个来源），再按 kind 取，省掉元组分配与哈希。
+_ALIGNED_BY_SOURCE: dict[str, dict[str, tuple[tuple[str, str], ...]]] = {}
+for _key, _sigs in _ALIGNED_BY_EVENT.items():
+    _ALIGNED_BY_SOURCE.setdefault(_key[0], {})[_key[1]] = _sigs
+_EMPTY_SIGNALS: dict[str, tuple[tuple[str, str], ...]] = {}
+
 _REFERENCE_SOURCE = "job"
 
 
@@ -329,7 +337,13 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
     # 真值只用于**打分**，而且与「试哪种模型」无关。它在模型循环里被反复调用
     # （每种假设都会把每一条事件判一次），所以在这里一次算清 —— 否则三种假设
     # 会把同一件事做三遍。真值仍然不参与估计。
-    truth_step_by_event = {id(e): truth_step_of(e) for e in pending}
+    #
+    # 按来源各建一条与 `pending_by_source` **位置对齐**的列表：模型循环里
+    # 直接按下标并排取。原来建的是 `id(event) → 真值` 的全局表，模型循环
+    # 再把每条事件的 `id()` 查回来 —— 一次对齐要白做两千多次 `id()` 与字典存取。
+    truth_by_source: dict[str, list[int | None]] = {
+        sid: [truth_step_of(e) for e in evs] for sid, evs in pending_by_source.items()
+    }
 
     reports: list[AlignmentReport] = []
     candidates: list[tuple[str, tuple[AlignmentModel, ...]]] = []
@@ -376,10 +390,8 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
 
         fits = fit_models(pairs)
         mine = pending_by_source.get(sid, [])
-        # 真值步号只与事件有关，与试哪种模型无关：原来在模型循环里每种假设
-        # 都查一遍（每条事件还各调两次 `id`）。这里按事件位置一次算好，
-        # 模型循环里只做一次列表取值。
-        truth_by_idx = [truth_step_by_event.get(id(e)) for e in mine]
+        # 真值步号只与事件有关，与试哪种模型无关，已按来源位置排好。
+        truth_by_idx = truth_by_source.get(sid, ())
 
         models: list[AlignmentModel] = []
         assigned_lists: dict[str, list[int | None]] = {}
@@ -500,7 +512,7 @@ def _build_step_table(
     """
     by_step: dict[int, dict[str, list[float]]] = {s: {} for s in step_ids}
     contrib: dict[int, dict[str, int]] = {s: {} for s in step_ids}
-    aligned_by_event = _ALIGNED_BY_EVENT
+    aligned_by_source = _ALIGNED_BY_SOURCE
     n_assigned = 0
 
     for e in pending:
@@ -509,7 +521,7 @@ def _build_step_table(
         if st is None:
             continue
         n_assigned += 1
-        signals = aligned_by_event.get((src, e.kind))
+        signals = aligned_by_source.get(src, _EMPTY_SIGNALS).get(e.kind)
         if not signals:
             continue
         step_vals = by_step[st]
