@@ -108,8 +108,11 @@ def step_kind(ss: StepSignal) -> str:
     本项目里 `ckpt_every=12` 与 `eval_every=10` 每 60 步撞一次，于是第 60 步
     既写 ckpt 又跑 eval —— 它的耗时比普通 ckpt 步长 30%，在 ckpt 层里 z≈15。
     """
-    ckpt = ss.get("ckpt_write_s") is not None
-    ev = ss.get("eval_loss") is not None
+    # 直接读 `values`：`StepSignal.get` 只是一层转发，而这里每次步类型判定
+    # 都要问两次，全表拟合时会被调上千次。
+    values = ss.values
+    ckpt = values.get("ckpt_write_s") is not None
+    ev = values.get("eval_loss") is not None
     if ckpt and ev:
         return "ckpt+eval"
     if ckpt:
@@ -286,7 +289,9 @@ def stratified_baselines(
     groups = strata(step_table)
     out: dict[tuple[str, str], Baseline] = {}
     for sig in signals:
-        overall = [(ss.step, ss.get(sig)) for ss in step_table]
+        # 直接读 `values`（`get` 只是转发）：每个信号要把全表与各分层再过一遍，
+        # 这里省下的是逐行的 Python 方法调用。
+        overall = [(ss.step, ss.values.get(sig)) for ss in step_table]
         b_all = fit_baseline(sig, fallback_kind, overall, floor_ratio, detrend=detrend, span=span)
         if b_all is not None:
             out[(sig, fallback_kind)] = b_all
@@ -294,7 +299,12 @@ def stratified_baselines(
             if len(members) < min_stratum_size:
                 continue
             b = fit_baseline(
-                sig, kind, [(ss.step, ss.get(sig)) for ss in members], floor_ratio, detrend=detrend, span=span
+                sig,
+                kind,
+                [(ss.step, ss.values.get(sig)) for ss in members],
+                floor_ratio,
+                detrend=detrend,
+                span=span,
             )
             if b is not None:
                 out[(sig, kind)] = b
