@@ -75,15 +75,24 @@ def build_resource_graph(
     k = float(cfg["detect"]["k"])
 
     # 每个资源在每一步的「坏方向 z」。正数 = 该资源这一步比平时更受压。
+    # 基线与步号无关，只与 (资源, 步类型) 有关：每种步类型把七路解析一次，
+    # 步循环里直接取。原来每步每资源都重新查一遍表（还要过一次兜底）。
+    resolved_by_kind: dict[str, dict[str, Baseline]] = {}
     bad_z: dict[str, dict[int, float]] = {r: {} for r in RESOURCES}
     for ss in step_table:
         kind = step_kind(ss)
+        per_kind = resolved_by_kind.get(kind)
+        if per_kind is None:
+            per_kind = resolved_by_kind[kind] = {}
+        vals = ss.values
         for r in RESOURCES:
             sig = RESOURCE_SIGNAL[r]
-            v = ss.get(sig)
+            v = vals.get(sig)
             if v is None:
                 continue
-            b = _baseline_for(table, sig, kind)
+            b = per_kind.get(sig)
+            if b is None:
+                b = per_kind[sig] = _baseline_for(table, sig, kind)
             z = b.z(v, ss.step)
             bad_z[r][ss.step] = z if RESOURCE_HIGH_IS_BAD[r] else -z
 
