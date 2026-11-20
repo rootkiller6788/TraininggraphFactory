@@ -242,11 +242,17 @@ def fit_baseline(
         ys.append(float(v))
     if not ys:
         return None
-    center = median(ys)
+    # 排一次序同时拿到中位数与极值：`median(ys)` 内部已经 `sorted` 过一遍，
+    # 再对同一个列表扫两次求 min/max 是白花。取值与 `median` / `min` / `max`
+    # 逐位相同（奇数取中位、偶数取两中点的 0.5·(a+b)）。
+    ys_sorted = sorted(ys)
+    n = len(ys_sorted)
+    mid = n // 2
+    center = ys_sorted[mid] if n % 2 else 0.5 * (ys_sorted[mid - 1] + ys_sorted[mid])
 
     log_space = False
-    if detrend and len(ys) >= 3 and min(ys) > 0.0:
-        log_space = (max(ys) / min(ys)) >= span
+    if detrend and n >= 3 and ys_sorted[0] > 0.0:
+        log_space = (ys_sorted[-1] / ys_sorted[0]) >= span
 
     ts = [math.log(y) for y in ys] if log_space else ys
     # 变换后中位数只与 ts 有关，算一次就够：原来非对数通道下 ts 就是 ys，
