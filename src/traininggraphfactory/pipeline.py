@@ -171,7 +171,8 @@ def run_pipeline(cfg: Mapping[str, Any]) -> PipelineResult:
     rg = build_resource_graph(step_table, cfg, baselines=shared_baselines)
     det = detect(step_table, cfg, baselines=shared_baselines)
     rec = recover(run, step_table, det, cfg, al)
-    ver = verify(cfg, step_table, rec.attributions, base_run=run)
+    # 校验的 α 尺度也读同一张分层基线（口径相同、表相同），不必再按信号现拟合。
+    ver = verify(cfg, step_table, rec.attributions, base_run=run, baselines=shared_baselines)
 
     lin = build_lineage(
         run=run,

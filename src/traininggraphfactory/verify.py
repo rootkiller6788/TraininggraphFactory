@@ -200,6 +200,7 @@ def verify(
     attributions: Sequence[Attribution],
     *,
     base_run: Any | None = None,
+    baselines: Mapping[tuple[str, str], Any] | None = None,
 ) -> VerifyResult:
     model = causal_model_of(cfg)
     sigs = signatures_of(cfg)
@@ -209,23 +210,29 @@ def verify(
     # 分层基线只依赖「表 + 信号」，与步号无关；同一次校验里 `base_table` 不变，
     # 所以每个信号只拟合一次（F 探针的对照信号在六个归因上是同一个）。
     # 步类型也一次算好，省掉每次 `_scale_of` 都线性扫一遍表。
+    #
+    # 流水线手里已经有 `base_table` 的联合基线表（检出与资源图共用那张），
+    # 口径完全相同（同样的分层参数、同一张表），直接拿来用就不必再逐信号拟合。
+    # 单独调用 `verify` 的路径没有这张表，退回按信号现拟合。
     kind_by_step = {ss.step: step_kind(ss) for ss in base_table}
     baseline_cache: dict[str, Mapping[tuple[str, str], Any]] = {}
 
     def alpha_for(signal: str, step: int) -> tuple[float, float, bool]:
-        bl = baseline_cache.get(signal)
+        bl = baselines
         if bl is None:
-            dcfg = cfg["detect"]
-            bl = stratified_baselines(
-                base_table,
-                [signal],
-                float(dcfg["mad_floor_ratio"]),
-                min_stratum_size=int(dcfg["min_stratum_size"]),
-                fallback_kind="all",
-                detrend=bool(dcfg.get("detrend", True)),
-                span=float(dcfg.get("detrend_span", 4.0)),
-            )
-            baseline_cache[signal] = bl
+            bl = baseline_cache.get(signal)
+            if bl is None:
+                dcfg = cfg["detect"]
+                bl = stratified_baselines(
+                    base_table,
+                    [signal],
+                    float(dcfg["mad_floor_ratio"]),
+                    min_stratum_size=int(dcfg["min_stratum_size"]),
+                    fallback_kind="all",
+                    detrend=bool(dcfg.get("detrend", True)),
+                    span=float(dcfg.get("detrend_span", 4.0)),
+                )
+                baseline_cache[signal] = bl
         return alpha_of(
             base_table,
             signal,
