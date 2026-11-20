@@ -31,7 +31,6 @@ from typing import Any, Iterable, Mapping, Sequence
 
 from .config import causal_model_of, signatures_of
 from .detect import DetectResult
-from .align import assign_step
 from .schema import (
     EVIDENCE_SIGNAL,
     FAILED_STATE_EDGE,
@@ -221,6 +220,9 @@ def resolve_steps(run: Any, al: Any | None) -> dict[str, int]:
         m = al.model(sid, name)
         if m is not None:
             models[sid] = m
+    # `assign_step` 只是一次二分加两个区间检查，这里是逐事件的热循环，
+    # 就地展开（判定与返回值逐位不变）。
+    bisect_right = bisect.bisect_right
     out: dict[str, int] = {}
     for e in run.events:
         if e.step is not None:
@@ -229,9 +231,14 @@ def resolve_steps(run: Any, al: Any | None) -> dict[str, int]:
         m = models.get(e.source)
         if m is None:
             continue
-        st = assign_step((e.t_local - m.a) / m.b, starts, bounds)
-        if st is not None:
-            out[e.id] = st
+        t_ref = (e.t_local - m.a) / m.b
+        i = bisect_right(starts, t_ref) - 1
+        if i < 0:
+            continue
+        st, b0, b1 = bounds[i]
+        if t_ref < b0 or t_ref >= b1:
+            continue
+        out[e.id] = st
     return out
 
 
