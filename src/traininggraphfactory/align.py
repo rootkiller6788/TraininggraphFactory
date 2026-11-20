@@ -325,14 +325,7 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
     # 真时钟的步边界，只用于打分
     truth_starts = [t.t_true_begin for t in run.traces]
     truth_steps = [t.step for t in run.traces]
-
-    def truth_step_of(e: Event) -> int | None:
-        sp = specs[e.source]
-        t_true = (e.t_local - sp.clock_offset_s) / (1.0 + sp.drift_s_per_s)
-        i = bisect.bisect_right(truth_starts, t_true) - 1
-        if i < 0:
-            return None
-        return truth_steps[i]
+    bisect_right = bisect.bisect_right
 
     # 真值只用于**打分**，而且与「试哪种模型」无关。它在模型循环里被反复调用
     # （每种假设都会把每一条事件判一次），所以在这里一次算清 —— 否则三种假设
@@ -341,9 +334,19 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
     # 按来源各建一条与 `pending_by_source` **位置对齐**的列表：模型循环里
     # 直接按下标并排取。原来建的是 `id(event) → 真值` 的全局表，模型循环
     # 再把每条事件的 `id()` 查回来 —— 一次对齐要白做两千多次 `id()` 与字典存取。
-    truth_by_source: dict[str, list[int | None]] = {
-        sid: [truth_step_of(e) for e in evs] for sid, evs in pending_by_source.items()
-    }
+    # 反转时钟的偏移与漂移在来源内是常量，先取出来；判定就地展开，省掉
+    # 每条事件一次函数调用与两次来源表查找（算术与结果逐位不变）。
+    truth_by_source: dict[str, list[int | None]] = {}
+    for sid, evs in pending_by_source.items():
+        sp = specs[sid]
+        off = sp.clock_offset_s
+        den = 1.0 + sp.drift_s_per_s
+        steps_out: list[int | None] = []
+        add = steps_out.append
+        for e in evs:
+            i = bisect_right(truth_starts, (e.t_local - off) / den) - 1
+            add(truth_steps[i] if i >= 0 else None)
+        truth_by_source[sid] = steps_out
 
     reports: list[AlignmentReport] = []
     candidates: list[tuple[str, tuple[AlignmentModel, ...]]] = []
@@ -356,7 +359,7 @@ def align(run: Any, cfg: Mapping[str, Any], *, only: Sequence[str] | None = None
     # 步归属是逐事件的热路径（每次对齐要判上千次，而且每种假设都要判一遍）。
     # `assign_step` 的逻辑本身只有一个二分 + 两个区间检查，函数调用开销与
     # 二分本身同量级 —— 在这个循环里就地展开，判定与返回值逐位不变。
-    bisect_right = bisect.bisect_right
+    # （二分函数在上面算真值时已经绑成局部名。）
 
     for sid in sorted(specs):
         sp = specs[sid]
